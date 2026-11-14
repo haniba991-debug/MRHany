@@ -10,6 +10,8 @@ import {
   ExternalLink,
   RefreshCw,
   MessageSquare,
+  Globe,
+  AlertTriangle,
 } from "lucide-react";
 import { Language } from "../utils/i18n";
 import { TelegramBotStatus } from "../bot/telegram.service";
@@ -30,6 +32,8 @@ interface TelegramBridgeProps {
   onConnectToken: (token: string) => Promise<void>;
   onRefreshStatus: () => Promise<void>;
   onTriggerCommand: (cmd: string) => void;
+  adminSecret: string;
+  onAdminSecretChange: (secret: string) => void;
 }
 
 export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
@@ -38,10 +42,53 @@ export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
   onConnectToken,
   onRefreshStatus,
   onTriggerCommand,
+  adminSecret,
+  onAdminSecretChange,
 }) => {
   const isAr = language === "ar";
   const [tokenInput, setTokenInput] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [webhookInfo, setWebhookInfo] = useState<any | null>(null);
+  const [webhookLoading, setWebhookLoading] = useState(false);
+  const [panelError, setPanelError] = useState("");
+
+  const refreshWebhookInfo = async () => {
+    setWebhookLoading(true);
+    setPanelError("");
+    try {
+      if (!adminSecret) throw new Error(isAr ? "أدخل سر الإدارة أولاً." : "Enter the admin secret first.");
+      const response = await fetch("/api/telegram/webhook/info", {
+        headers: { Authorization: `Bearer ${adminSecret}` },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Webhook status unavailable");
+      setWebhookInfo(data);
+    } catch (error: any) {
+      setPanelError(error?.message || "Webhook status unavailable");
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
+
+  const registerWebhook = async () => {
+    setWebhookLoading(true);
+    setPanelError("");
+    try {
+      if (!adminSecret) throw new Error(isAr ? "أدخل سر الإدارة أولاً." : "Enter the admin secret first.");
+      const response = await fetch("/api/telegram/webhook/register", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminSecret}` },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Webhook registration failed");
+      await refreshWebhookInfo();
+      await onRefreshStatus();
+    } catch (error: any) {
+      setPanelError(error?.message || "Webhook registration failed");
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
 
   const commands = [
     { cmd: "/start", descAr: "بدء المساعد وعرض القائمة التفاعلية", descEn: "Start assistant & show interactive menu" },
@@ -90,6 +137,27 @@ export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
               <RefreshCw className="h-3.5 w-3.5" />
               <span>{isAr ? "تحديث الحالة" : "Refresh Status"}</span>
             </button>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+            <label className="mb-2 block text-xs font-medium text-slate-700 dark:text-slate-300">
+              {isAr ? "سر الإدارة (ADMIN_SECRET)" : "Admin secret (ADMIN_SECRET)"}
+            </label>
+            <input type="password" autoComplete="current-password" value={adminSecret}
+              onChange={(e) => onAdminSecretChange(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-800" />
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0 text-xs text-slate-600 dark:text-slate-400">
+                <div className="flex items-center gap-1 font-semibold"><Globe className="h-3.5 w-3.5" />{isAr ? "حالة Webhook لدى Telegram" : "Telegram Webhook Status"}</div>
+                <div className="mt-1 break-all">{webhookInfo ? webhookInfo.configured ? webhookInfo.url : (isAr ? "غير مسجل" : "Not registered") : (isAr ? "لم يتم الفحص بعد" : "Not checked yet")}</div>
+                {webhookInfo?.lastErrorMessage && <div className="mt-1 flex items-start gap-1 text-amber-700"><AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />{webhookInfo.lastErrorMessage}</div>}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={refreshWebhookInfo} disabled={webhookLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold disabled:opacity-50 dark:border-slate-700">{isAr ? "فحص" : "Check"}</button>
+                <button type="button" onClick={registerWebhook} disabled={webhookLoading} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{isAr ? "تسجيل Webhook" : "Register webhook"}</button>
+              </div>
+            </div>
+            {panelError && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{panelError}</p>}
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-950/60 sm:grid-cols-4">
@@ -152,7 +220,7 @@ export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
             </label>
             <div className="flex gap-2">
               <input
-                type="text"
+                type="password"
                 placeholder="123456789:AAH..."
                 value={tokenInput}
                 onChange={(e) => setTokenInput(e.target.value)}
@@ -164,8 +232,11 @@ export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
                 onClick={async () => {
                   setConnecting(true);
                   try {
+                    if (!adminSecret) throw new Error(isAr ? "أدخل سر الإدارة أولاً." : "Enter the admin secret first.");
                     await onConnectToken(tokenInput.trim());
                     setTokenInput("");
+                  } catch (error: any) {
+                    setPanelError(error?.message || "Connection failed");
                   } finally {
                     setConnecting(false);
                   }
@@ -187,6 +258,9 @@ export const TelegramBridgePanel: React.FC<TelegramBridgeProps> = ({
               </p>
             )}
           </div>
+          <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {isAr ? "أزرار الأوامر تفتح محاكي الوحدات في الموقع، ولا ترسل رسائل إلى مستخدمي Telegram." : "Command buttons open the site's module simulator; they do not message Telegram users."}
+          </p>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
@@ -284,6 +358,9 @@ interface AdminDashboardProps {
   totalTokens: number;
   skills: SkillMeta[];
   onToggleSkill: (skillId: string, enabled: boolean) => Promise<void>;
+  adminSecret: string;
+  onAdminSecretChange: (secret: string) => void;
+  onRunAudit: (adminSecret: string) => Promise<any>;
 }
 
 export const AdminDashboardPanel: React.FC<AdminDashboardProps> = ({
@@ -295,6 +372,9 @@ export const AdminDashboardPanel: React.FC<AdminDashboardProps> = ({
   totalTokens,
   skills,
   onToggleSkill,
+  adminSecret,
+  onAdminSecretChange,
+  onRunAudit,
 }) => {
   const isAr = language === "ar";
   const [auditRunning, setAuditRunning] = useState(false);
@@ -303,11 +383,11 @@ export const AdminDashboardPanel: React.FC<AdminDashboardProps> = ({
   const handleRunLiveAudit = async () => {
     setAuditRunning(true);
     try {
-      const res = await fetch("/api/audit/run", { method: "POST" });
-      const data = await res.json();
+      if (!adminSecret) throw new Error(isAr ? "أدخل سر الإدارة أولاً." : "Enter the admin secret first.");
+      const data = await onRunAudit(adminSecret);
       setAuditReport(data);
-    } catch (err) {
-      console.error("Audit error:", err);
+    } catch (err: any) {
+      setAuditReport({ error: err?.message || "Audit failed", results: [] });
     } finally {
       setAuditRunning(false);
     }
@@ -356,8 +436,14 @@ export const AdminDashboardPanel: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
+      <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+        <label className="mb-2 block font-semibold">{isAr ? "سر الإدارة — يبقى في ذاكرة الصفحة فقط" : "Admin secret — kept in page memory only"}</label>
+        <input type="password" autoComplete="current-password" value={adminSecret} onChange={(e) => onAdminSecretChange(e.target.value)} className="w-full max-w-xl rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs dark:border-slate-700 dark:bg-slate-800" />
+      </div>
+
       {/* Live Integration Audit Results Table */}
-      {auditReport && auditReport.results && (
+      {auditReport?.error && <p className="rounded-lg bg-red-50 p-3 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-200">{auditReport.error}</p>}
+      {auditReport && auditReport.results && auditReport.results.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-6 py-4 dark:border-slate-800">
             <div>

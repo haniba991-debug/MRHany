@@ -85,7 +85,7 @@ export class AgentOrchestrator {
       nameEn: "Vision & Video Intelligence",
       descriptionAr: "تحليل الصور، المخططات، لقطات الشاشة، استخراج النصوص OCR، وتحليل الفيديو.",
       descriptionEn: "Analyze photos, diagrams, OCR tables, and video walkthroughs via Gemini 4 Argon.",
-      defaultModel: "gemini-4-argon",
+      defaultModel: "gemini-3.8-flash",
       enabled: true,
     },
     {
@@ -139,7 +139,7 @@ export class AgentOrchestrator {
       nameEn: "Engineering & BOQ Assistant",
       descriptionAr: "قراءة المخططات الإنشائية والمعمارية، حصر الخرسانة والحديد، وتقارير الموقع Snag List.",
       descriptionEn: "Analyze structural blueprints, calculate concrete/rebar BOQ, and inspect site defects.",
-      defaultModel: "gemini-4-argon",
+      defaultModel: "gemini-3.8-flash",
       enabled: true,
     },
     {
@@ -148,7 +148,7 @@ export class AgentOrchestrator {
       nameEn: "Data & Statistical Analysis",
       descriptionAr: "تحليل البيانات الجدولية والمالية واستخراج المؤشرات الرئيسية.",
       descriptionEn: "Analyze CSV/XLSX datasets, calculate KPIs, and produce structured insights.",
-      defaultModel: "gemini-4-argon",
+      defaultModel: "gemini-3.8-flash",
       enabled: true,
     },
     {
@@ -247,7 +247,18 @@ export class AgentOrchestrator {
     const hasArabicChars = /[\u0600-\u06FF]/.test(req.prompt || "");
     const lang: "ar" | "en" = hasArabicChars ? "ar" : req.language || "ar";
     const isRtl = lang === "ar";
-    const { primarySkill, needsExcelBoq } = this.detectIntent(req);
+    const { primarySkill, needsExcelBoq: detectedExcelBoq } = this.detectIntent(req);
+    const primarySkillMeta = this.skillsRegistry.find((skill) => skill.id === primarySkill);
+    if (primarySkillMeta && !primarySkillMeta.enabled) {
+      return {
+        replyText: lang === "ar" ? "هذه المهارة متوقفة حالياً من لوحة الإدارة. اختر مهارة أخرى أو تواصل مع المسؤول." : "This skill is currently paused by an administrator. Choose another skill or contact the administrator.",
+        skillUsed: primarySkill,
+        combinedSkills: [primarySkill],
+        modelUsed: "disabled",
+        tokensUsed: 0,
+      };
+    }
+    const needsExcelBoq = detectedExcelBoq && Boolean(this.skillsRegistry.find((skill) => skill.id === "ExcelSkill")?.enabled);
     const combinedSkills: string[] = [primarySkill];
     let totalTokens = 0;
 

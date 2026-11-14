@@ -2,9 +2,11 @@ import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import http from "http";
 import path from "path";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { agentOrchestrator } from "./src/agents/orchestrator";
 import { telegramBotManager } from "./src/bot/telegram.service";
+import { telegramSessionStore } from "./src/bot/telegram-session-store";
 import { IntegrationAuditRunner } from "./src/tests/audit-runner";
 import { logger } from "./src/utils/logger";
 
@@ -14,6 +16,7 @@ dotenv.config({ override: true });
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQ = 45;
+const aiRateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
   const ip = req.ip || req.headers["x-forwarded-for"]?.toString() || "local";
@@ -28,6 +31,24 @@ function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
     return res.status(429).json({
       error: "تم تجاوز الحد المسموح به للطلبات في الدقيقة. يرجى الانتظار قليلاً والمحاولة مجدداً.",
     });
+  }
+  return next();
+}
+
+function aiRateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || req.headers["x-forwarded-for"]?.toString() || "local";
+  const now = Date.now();
+  const entry = aiRateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    aiRateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    if (aiRateLimitMap.size > 5000) {
+      for (const [key, value] of aiRateLimitMap) if (now > value.resetAt) aiRateLimitMap.delete(key);
+    }
+    return next();
+  }
+  entry.count += 1;
+  if (entry.count > 10) {
+    return res.status(429).json({ error: "تم تجاوز الحد المؤقت لطلبات الذكاء الاصطناعي. حاول بعد دقيقة." });
   }
   return next();
 }
@@ -47,14 +68,12 @@ const ALLOWED_MIME_PREFIXES = [
 ];
 
 function isAuthorizedAdmin(req: Request): boolean {
-  const expectedSecret = process.env.ADMIN_SECRET;
-  if (!expectedSecret) return true;
-  const authHeader = req.headers.authorization;
-  const adminEmail = req.body?.adminEmail;
-  return (
-    authHeader === `Bearer ${expectedSecret}` ||
-    adminEmail === "haniba991@gmail.com"
-  );
+  const expectedSecret = (process.env.ADMIN_SECRET || "").trim();
+  const suppliedSecret = (req.header("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (expectedSecret.length < 32 || expectedSecret.startsWith("REPLACE_") || !suppliedSecret) return false;
+  const expected = Buffer.from(expectedSecret, "utf8");
+  const supplied = Buffer.from(suppliedSecret, "utf8");
+  return expected.length === supplied.length && crypto.timingSafeEqual(expected, supplied);
 }
 
 export async function createApp() {
@@ -156,7 +175,10 @@ export async function createApp() {
   });
 
   // Webhook Inspection & Registration Routes
-  app.get("/api/telegram/webhook/info", async (_req, res) => {
+  app.get("/api/telegram/webhook/info", async (req, res) => {
+    if (!isAuthorizedAdmin(req)) {
+      return res.status(401).json({ error: "Unauthorized Admin Action" });
+    }
     try {
       const info = await telegramBotManager.getWebhookInfo();
       return res.json({
@@ -207,9 +229,19 @@ export async function createApp() {
 
   // 1. Health & Platform Config Route
   app.get("/api/status", (_req, res) => {
+    const telegram = telegramBotManager.getStatus();
     res.json({
       botName: "Mr. Hany – Advanced AI Assistant",
-      telegram: telegramBotManager.getStatus(),
+      // Public bootstrap status only. User identities and message previews are admin-only data.
+      telegram: {
+        connected: telegram.connected,
+        botUsername: telegram.botUsername,
+        botFirstName: telegram.botFirstName,
+        botLink: telegram.botLink,
+        mode: telegram.mode,
+        executionMode: telegram.executionMode,
+        webhookSecretConfigured: telegram.webhookSecretConfigured,
+      },
       skills: agentOrchestrator.skillsRegistry,
       runtime: {
         nodeEnv: process.env.NODE_ENV || "development",
@@ -225,7 +257,8 @@ export async function createApp() {
             process.env.TELEGRAM_BOT_TOKEN !== "YOUR_TELEGRAM_BOT_TOKEN"
         ),
         webhookSecretConfigured: telegramBotManager.isWebhookSecretConfigured(),
-        databaseConfigured: true,
+        databaseConfigured: telegramSessionStore.isConfigured(),
+        telegramSessionPersistenceConfigured: telegramSessionStore.isConfigured(),
         adminSecretConfigured: Boolean(process.env.ADMIN_SECRET),
       },
       modelsAvailable: [
@@ -238,8 +271,15 @@ export async function createApp() {
     });
   });
 
+  app.get("/api/admin/telegram/status", (req, res) => {
+    if (!isAuthorizedAdmin(req)) {
+      return res.status(401).json({ error: "Unauthorized Admin Action" });
+    }
+    return res.json({ telegram: telegramBotManager.getStatus() });
+  });
+
   // 2. Primary Modular AI Agent Execution Endpoint
-  app.post("/api/agent/execute", rateLimitMiddleware, async (req, res) => {
+  app.post("/api/agent/execute", rateLimitMiddleware, aiRateLimitMiddleware, async (req, res) => {
     try {
       const { prompt, fileBase64, fileMimeType } = req.body || {};
 
@@ -279,7 +319,7 @@ export async function createApp() {
   app.post("/api/admin/skills/toggle", (req, res) => {
     const { skillId, enabled } = req.body;
 
-    if (process.env.ADMIN_SECRET && !isAuthorizedAdmin(req)) {
+    if (!isAuthorizedAdmin(req)) {
       return res
         .status(401)
         .json({ error: "غير مصرح بتعديل إعدادات النظام (Unauthorized Admin Action)." });
@@ -295,6 +335,9 @@ export async function createApp() {
 
   // 4. Connect or Reinitialize Live Telegram Bot Token
   app.post("/api/telegram/connect", rateLimitMiddleware, async (req, res) => {
+    if (!isAuthorizedAdmin(req)) {
+      return res.status(401).json({ error: "Unauthorized Admin Action" });
+    }
     try {
       const { token } = req.body;
       const status = await telegramBotManager.initialize(token);
@@ -305,7 +348,10 @@ export async function createApp() {
   });
 
   // 5. Run Full Functional & Integration Audit Suite
-  app.post("/api/audit/run", rateLimitMiddleware, async (_req, res) => {
+  app.post("/api/audit/run", rateLimitMiddleware, async (req, res) => {
+    if (!isAuthorizedAdmin(req)) {
+      return res.status(401).json({ error: "Unauthorized Admin Action" });
+    }
     try {
       const report = await IntegrationAuditRunner.runAll();
       res.json(report);

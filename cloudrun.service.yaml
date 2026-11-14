@@ -8,13 +8,13 @@ spec:
   template:
     metadata:
       annotations:
-        # Keep CPU allocated after HTTP 200 OK so async AI & document generation jobs never freeze
-        run.googleapis.com/cpu-throttling: "false"
-        autoscaling.knative.dev/minScale: "1"
-        autoscaling.knative.dev/maxScale: "5"
+        # Scale to zero and keep billing request-based for a cost-controlled trial.
+        run.googleapis.com/cpu-throttling: "true"
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "1"
     spec:
-      containerConcurrency: 80
-      timeoutSeconds: 300
+      containerConcurrency: 1
+      timeoutSeconds: 60
       containers:
         - image: REGION-docker.pkg.dev/gen-lang-client-0702633943/mr-hany-repo/mr-hany-bot:latest
           ports:
@@ -22,15 +22,17 @@ spec:
               containerPort: 8080
           resources:
             limits:
-              cpu: "2"
-              memory: 2Gi
+              cpu: "1"
+              memory: 1Gi
           env:
             - name: NODE_ENV
               value: production
             - name: TELEGRAM_MODE
               value: webhook
             - name: WEBHOOK_EXECUTION_MODE
-              value: async
+              value: sync
+            - name: GEMINI_FREE_TIER_ONLY
+              value: "true"
             - name: TELEGRAM_AUTO_SET_WEBHOOK
               value: "true"
             - name: ENABLE_FIRESTORE_DEDUP

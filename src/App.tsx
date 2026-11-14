@@ -183,6 +183,7 @@ export default function App() {
     processedTelegramMessages: 0,
   });
   const [skillsRegistry, setSkillsRegistry] = useState<any[]>([]);
+  const [adminSecret, setAdminSecret] = useState("");
 
   // Confirmation Modal State
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -868,7 +869,7 @@ export default function App() {
               className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             >
               <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-              <option value="gemini-4-argon">Gemini 4 Argon (Pro/BOQ)</option>
+              <option value="gemini-4-argon">Gemini 4 Argon (paid-tier model)</option>
               <option value="gemini-3.1-flash-lite">Gemini 3.1 Lite (Fast)</option>
             </select>
 
@@ -953,18 +954,24 @@ export default function App() {
           <TelegramBridgePanel
             language={language}
             telegramStatus={telegramStatus}
+            adminSecret={adminSecret}
+            onAdminSecretChange={setAdminSecret}
             onConnectToken={async (token) => {
               const res = await fetch("/api/telegram/connect", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminSecret}` },
                 body: JSON.stringify({ token }),
               });
               const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Telegram connection failed");
               if (data.status) setTelegramStatus(data.status);
             }}
             onRefreshStatus={async () => {
-              const res = await fetch("/api/status");
+              const res = await fetch("/api/admin/telegram/status", {
+                headers: { Authorization: `Bearer ${adminSecret}` },
+              });
               const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Unable to refresh Telegram status");
               if (data.telegram) setTelegramStatus(data.telegram);
             }}
             onTriggerCommand={(cmd) => {
@@ -998,13 +1005,26 @@ export default function App() {
             totalMemories={firestoreMemories.length}
             totalTokens={totalTokensConsumed}
             skills={skillsRegistry}
+            adminSecret={adminSecret}
+            onAdminSecretChange={setAdminSecret}
+            onRunAudit={async (secret) => {
+              const res = await fetch("/api/audit/run", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${secret}` },
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Audit failed");
+              return data;
+            }}
             onToggleSkill={async (skillId, enabled) => {
+              if (!adminSecret) throw new Error(isAr ? "أدخل سر الإدارة أولاً." : "Enter the admin secret first.");
               const res = await fetch("/api/admin/skills/toggle", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminSecret}` },
                 body: JSON.stringify({ skillId, enabled }),
               });
               const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Skill update failed");
               if (data.skills) setSkillsRegistry(data.skills);
             }}
           />

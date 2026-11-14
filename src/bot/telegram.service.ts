@@ -4,6 +4,7 @@ import { agentOrchestrator } from "../agents/orchestrator";
 import { logger } from "../utils/logger";
 import { withRetry } from "../utils/retry";
 import { UpdateDeduplicator } from "./update-dedup";
+import { telegramSessionStore } from "./telegram-session-store";
 
 export interface TelegramActivityItem {
   id: string;
@@ -689,6 +690,10 @@ class TelegramBotManager {
     if (!fileInfo.file_path) {
       throw new Error("Unable to resolve file_path from Telegram API");
     }
+    const maxFileBytes = Number(process.env.TELEGRAM_MAX_FILE_BYTES) || 20 * 1024 * 1024;
+    if (fileInfo.file_size && fileInfo.file_size > maxFileBytes) {
+      throw new Error(`Telegram file exceeds the ${Math.floor(maxFileBytes / (1024 * 1024))} MB processing limit.`);
+    }
     const url = `https://api.telegram.org/file/bot${this.activeToken}/${fileInfo.file_path}`;
     return await withRetry(
       async () => {
@@ -698,7 +703,14 @@ class TelegramBotManager {
           err.status = response.status;
           throw err;
         }
+        const contentLength = Number(response.headers.get("content-length") || 0);
+        if (contentLength > maxFileBytes) {
+          throw new Error(`Telegram file exceeds the ${Math.floor(maxFileBytes / (1024 * 1024))} MB processing limit.`);
+        }
         const arrayBuf = await response.arrayBuffer();
+        if (arrayBuf.byteLength > maxFileBytes) {
+          throw new Error(`Telegram file exceeds the ${Math.floor(maxFileBytes / (1024 * 1024))} MB processing limit.`);
+        }
         return Buffer.from(arrayBuf);
       },
       { label: "telegram:downloadFile", maxAttempts: 3 }
@@ -782,6 +794,39 @@ class TelegramBotManager {
         return;
       }
       await next();
+    });
+
+    // Hydrate and persist Telegram user context so restarts and horizontal workers don't erase it.
+    bot.use(async (ctx, next) => {
+      const uid = ctx.from?.id;
+      if (!uid) return next();
+
+      if (!this.userSessions.has(uid)) {
+        try {
+          const saved = await telegramSessionStore.load(uid);
+          if (saved) this.userSessions.set(uid, saved);
+        } catch (err: any) {
+          logger.warn("Telegram session restore failed; continuing with an in-memory session", {
+            userId: uid,
+            error: err?.message || String(err),
+          });
+        }
+      }
+
+      try {
+        await next();
+      } finally {
+        const session = this.userSessions.get(uid);
+        try {
+          if (session) await telegramSessionStore.save(uid, session);
+          else await telegramSessionStore.delete(uid);
+        } catch (err: any) {
+          logger.warn("Telegram session persistence failed", {
+            userId: uid,
+            error: err?.message || String(err),
+          });
+        }
+      }
     });
 
     // 1. /start command

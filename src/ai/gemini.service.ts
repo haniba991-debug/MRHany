@@ -63,9 +63,11 @@ export class ServerGeminiService {
     fallbackModel: string = "gemini-3.8-flash",
     probeTimeoutMs: number = 4500
   ): Promise<{ result: T; actualModel: string; fallbackReason?: string }> {
-    const candidateModels = Array.from(
-      new Set([primaryModel, fallbackModel, "gemini-3.1-flash-lite"])
-    );
+    // Free-tier mode is the default: never attempt models outside the free model allowlist.
+    const freeTierOnly = process.env.GEMINI_FREE_TIER_ONLY !== "false";
+    const candidateModels = freeTierOnly
+      ? ["gemini-3.8-flash", "gemini-3.1-flash-lite"]
+      : Array.from(new Set([primaryModel, fallbackModel, "gemini-3.1-flash-lite"]));
     const errors: string[] = [];
     const now = Date.now();
 
@@ -164,6 +166,9 @@ export class ServerGeminiService {
     systemInstructionOverride?: string;
   }): Promise<GeminiGenerationResult> {
     const ai = this.getClient();
+    const freeTierOnly = process.env.GEMINI_FREE_TIER_ONLY !== "false";
+    const groundingRequested = Boolean(params.enableMapsGrounding || params.enableSearchGrounding);
+    const groundingAllowed = !freeTierOnly && groundingRequested;
     const chosenModel = params.enableMapsGrounding
       ? "gemini-3.8-flash"
       : params.model || "gemini-3.8-flash";
@@ -174,7 +179,7 @@ export class ServerGeminiService {
 Rules:
 1. Respond naturally in the language used by the user (Arabic is default; support Arabic, English, and mixed-language conversations seamlessly).
 2. Provide structured, accurate, and actionable answers with clear headings, bullet points, and tables where helpful.
-3. For mathematical or engineering calculations, show step-by-step formulas and clearly state assumptions vs. verified measurements.`;
+3. For mathematical or engineering calculations, show step-by-step formulas and clearly state assumptions vs. verified measurements.${freeTierOnly && groundingRequested ? "\n4. Live web search and map grounding are disabled in free-tier mode. Do not imply that you checked current sources or live locations." : ""}`;
 
     const contents = [
       ...(params.history || []).map((msg) => ({
@@ -193,7 +198,7 @@ Rules:
           systemInstruction: defaultSystemInstruction,
         };
 
-        if (params.enableMapsGrounding) {
+        if (groundingAllowed && params.enableMapsGrounding) {
           config.tools = [{ googleMaps: {} }];
           if (params.latLng) {
             config.toolConfig = {
@@ -205,7 +210,7 @@ Rules:
               },
             };
           }
-        } else if (params.enableSearchGrounding) {
+        } else if (groundingAllowed && params.enableSearchGrounding) {
           config.tools = [{ googleSearch: {} }];
         } else if (modelToUse === "gemini-4-argon") {
           config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };

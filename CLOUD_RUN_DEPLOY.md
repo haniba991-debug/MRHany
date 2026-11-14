@@ -1,139 +1,71 @@
-# دليل نشر بوت مستر هاني (Mr. Hany) على Google Cloud Run مع Telegram Webhook
+# Cost controlled Cloud Run deployment
 
-هذا الدليل يشرح خطوة بخطوة تحويل ونشر **Mr. Hany – Advanced AI Assistant** كخدمة مستقلة بالكامل على **Google Cloud Run** باستخدام **HTTPS Webhook** و **Google Secret Manager**.
+Cloud Run can run this webhook service at low or zero cost while it stays inside its monthly free quota. It is **not a guaranteed zero cost host**: Google requires billing to be enabled, and usage or network traffic outside the free quota can be billed. Set a small budget alert before deployment; budget alerts notify you but are not a hard spending cap.
 
----
+The service configuration in `cloudrun.service.yaml` scales to zero, uses request based CPU, one instance, one concurrent request, synchronous webhook processing, and the Gemini free model allowlist. The first Telegram update after scale-to-zero can be delayed while the container starts. Long AI jobs can exceed Telegram's webhook timeout; for reliable all day service, use an always-on VM and accept its free-tier availability limits.
 
-## 1. المتطلبات المسبقة (Prerequisites)
+## 1. Required values
 
-1. مشروع Google Cloud: `gen-lang-client-0702633943` (مع تفعيل الفوترة Billing).
-2. تثبيت وتهيئة `gcloud` CLI:
-   ```bash
-   gcloud auth login
-   gcloud config set project gen-lang-client-0702633943
-   ```
-3. تفعيل واجهات البرمجة المطلوبة:
-   ```bash
-   gcloud services enable \
-     run.googleapis.com \
-     cloudbuild.googleapis.com \
-     artifactregistry.googleapis.com \
-     secretmanager.googleapis.com
-   ```
+Keep these values in Google Secret Manager, never in Git:
 
----
+- `GEMINI_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET` (at least 32 random characters)
+- `ADMIN_SECRET` (at least 32 random characters)
 
-## 2. إنشاء الأسرار في Secret Manager (تأمين المفاتيح)
+Generate two random secrets locally:
 
-> لا تضع أي مفاتيح أو توكنات داخل الكود أو `Dockerfile` مطلقاً.
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
+```
 
-1. إنشاء توكن سري قوي للتحقق من Webhook (32 بايت عشوائي):
-   ```bash
-   WEBHOOK_SECRET=$(openssl rand -hex 32)
-   echo "Generated Webhook Secret: $WEBHOOK_SECRET"
-   ```
-2. حفظ الأسرار في **Google Secret Manager**:
-   ```bash
-   printf "%s" "YOUR_REAL_GEMINI_API_KEY" | gcloud secrets create gemini-api-key --data-file=-
-   printf "%s" "YOUR_REAL_TELEGRAM_BOT_TOKEN" | gcloud secrets create telegram-bot-token --data-file=-
-   printf "%s" "$WEBHOOK_SECRET" | gcloud secrets create telegram-webhook-secret --data-file=-
-   printf "%s" "$(openssl rand -hex 24)" | gcloud secrets create mr-hany-admin-secret --data-file=-
-   ```
-3. منح حساب الخدمة الافتراضي لـ Cloud Run صلاحية قراءة الأسرار:
-   ```bash
-   PROJECT_NUMBER=$(gcloud projects describe gen-lang-client-0702633943 --format="value(projectNumber)")
-   SA_EMAIL="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+The service account running Cloud Run needs `roles/datastore.user` on the Firebase project so the bot can store Telegram sessions in Firestore. It should also have Secret Manager Secret Accessor on the four secrets.
 
-   for SECRET in gemini-api-key telegram-bot-token telegram-webhook-secret mr-hany-admin-secret; do
-     gcloud secrets add-iam-policy-binding "$SECRET" \
-       --member="serviceAccount:${SA_EMAIL}" \
-       --role="roles/secretmanager.secretAccessor"
-   done
-   ```
+## 2. Deploy
 
----
-
-## 3. النشر على Google Cloud Run
-
-استخدم الأمر التالي لبناء صورة Docker ونشرها مباشرة على Cloud Run:
-
-> **هام جداً:** يجب تفعيل `--no-cpu-throttling` حتى تستمر المهام الطويلة (مثل تحليل المخططات وتوليد ملفات Excel/PDF/Word بالذكاء الاصطناعي) في التنفيذ بسلاسة بعد إرسال استجابة `200 OK` الفورية لتليجرام.
+Enable Cloud Run, Cloud Build, Artifact Registry, and Secret Manager APIs, then create the four secrets and grant the service account access. Deploy the container from the repository:
 
 ```bash
 gcloud run deploy mr-hany-telegram-bot \
   --source . \
   --region europe-west1 \
-  --platform managed \
   --allow-unauthenticated \
   --port 8080 \
-  --cpu 2 \
-  --memory 2Gi \
-  --timeout 300 \
-  --min-instances 1 \
-  --max-instances 5 \
-  --no-cpu-throttling \
-  --set-env-vars "NODE_ENV=production,TELEGRAM_MODE=webhook,WEBHOOK_EXECUTION_MODE=async,LOG_FORMAT=json,TELEGRAM_AUTO_SET_WEBHOOK=true" \
+  --cpu 1 \
+  --memory 1Gi \
+  --timeout 60 \
+  --min 0 \
+  --max 1 \
+  --concurrency 1 \
+  --set-env-vars "NODE_ENV=production,TELEGRAM_MODE=webhook,WEBHOOK_EXECUTION_MODE=sync,GEMINI_FREE_TIER_ONLY=true,TELEGRAM_AUTO_SET_WEBHOOK=true,LOG_FORMAT=json" \
   --set-secrets "GEMINI_API_KEY=gemini-api-key:latest,TELEGRAM_BOT_TOKEN=telegram-bot-token:latest,TELEGRAM_WEBHOOK_SECRET=telegram-webhook-secret:latest,ADMIN_SECRET=mr-hany-admin-secret:latest"
 ```
 
----
+Get the service URL and set the webhook URL so startup can register it:
 
-## 4. ربط Telegram Webhook برابط Cloud Run HTTPS
-
-بعد انتهاء النشر، احصل على رابط الخدمة الرسمي:
 ```bash
 SERVICE_URL=$(gcloud run services describe mr-hany-telegram-bot --region europe-west1 --format="value(status.url)")
-echo "Cloud Run URL: $SERVICE_URL"
+gcloud run services update mr-hany-telegram-bot \
+  --region europe-west1 \
+  --update-env-vars "TELEGRAM_WEBHOOK_URL=${SERVICE_URL}/telegram/webhook"
 ```
 
-1. **تحديث متغير `TELEGRAM_WEBHOOK_URL` داخل Cloud Run** (للتسجيل التلقائي عند إعادة التشغيل):
-   ```bash
-   gcloud run services update mr-hany-telegram-bot \
-     --region europe-west1 \
-     --update-env-vars "TELEGRAM_WEBHOOK_URL=${SERVICE_URL}/telegram/webhook"
-   ```
+The app uses the Cloud Run service identity to reach Firestore; do not add a service account key to Cloud Run.
 
-2. **تسجيل Webhook لدى Telegram API مع Secret Token**:
-   يمكنك استخدام السكربت الجاهز داخل المشروع:
-   ```bash
-   TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN" \
-   TELEGRAM_WEBHOOK_SECRET="$WEBHOOK_SECRET" \
-   npm run webhook:set -- "${SERVICE_URL}/telegram/webhook"
-   ```
-   أو عبر `curl` مباشرة:
-   ```bash
-   curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-     -H "Content-Type: application/json" \
-     -d "{
-       \"url\": \"${SERVICE_URL}/telegram/webhook\",
-       \"secret_token\": \"${WEBHOOK_SECRET}\",
-       \"max_connections\": 40,
-       \"allowed_updates\": [\"message\", \"callback_query\"]
-     }"
-   ```
+## 3. Check the service
 
----
+```bash
+SERVICE_URL=$(gcloud run services describe mr-hany-telegram-bot --region europe-west1 --format="value(status.url)")
+curl -i "$SERVICE_URL/healthz"
+curl -i "$SERVICE_URL/readyz"
+```
 
-## 5. التحقق من جاهزية الخدمة بعد النشر
+The dashboard's **Check Webhook** action requires the `ADMIN_SECRET`. Confirm the registered URL ends with `/telegram/webhook` and that Telegram reports no delivery error.
 
-1. **فحص Health Checks**:
-   ```bash
-   curl -i "${SERVICE_URL}/healthz"
-   curl -i "${SERVICE_URL}/readyz"
-   ```
-2. **التحقق من حالة Webhook لدى Telegram**:
-   ```bash
-   TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN" npm run webhook:info
-   ```
-   تأكد أن `url` يطابق `${SERVICE_URL}/telegram/webhook` وأن `last_error_message` فارغ.
-3. **التحقق من رفض الطلبات غير المصرح بها**:
-   ```bash
-   curl -i -X POST "${SERVICE_URL}/telegram/webhook" \
-     -H "Content-Type: application/json" \
-     -d '{"update_id": 1}'
-   # يجب أن يعيد HTTP 401 Unauthorized
-   ```
-4. **مراقبة السجلات (Cloud Logging)**:
-   ```bash
-   gcloud run services logs read mr-hany-telegram-bot --region europe-west1 --limit 50
-   ```
+## 4. Cost and privacy limits
+
+- The Google Cloud free quota is shared across a billing account and can be exhausted. Network egress and some features may be billed separately.
+- Firestore's free quota is finite. Telegram sessions are stored in `telegram_sessions`; they contain conversation history and user preferences.
+- Gemini's free API tier has rate limits, and Google may use free-tier prompts to improve its services. The `GEMINI_FREE_TIER_ONLY=true` setting avoids the paid-only model and disables live search/maps grounding.
+- Cloud Run scales to zero, so this is a cost-conscious webhook deployment, not a warm always-running server.
