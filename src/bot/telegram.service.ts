@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import sharp from "sharp";
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import { serverGemini } from "../ai/gemini.service";
 import { agentOrchestrator } from "../agents/orchestrator";
@@ -66,6 +67,7 @@ interface TelegramUserSession {
 }
 
 type InspectionOutputFormat = "word" | "excel" | "pdf";
+const MAX_BATCH_PHOTOS = 300;
 
 const DEFAULT_ROOM_DEFECTS_REFERENCE = [
   "عنوان عربي في أعلى المستند: تقرير ملاحظات الغرف مع نطاق أرقام الغرف.",
@@ -945,31 +947,36 @@ class TelegramBotManager {
       await this.replyWithRetry(ctx, "بدأ تحليل الدفعة بالفعل؛ استنى النتيجة قبل إضافة صور جديدة.");
       return;
     }
-    if (batch.photos.length >= 50) {
-      await this.replyWithRetry(ctx, "وصلت للحد الأقصى وهو 50 صورة. اكتب /finish word أو /finish excel أو /finish pdf.");
+    if (batch.photos.length >= MAX_BATCH_PHOTOS) {
+      await this.replyWithRetry(ctx, `وصلت للحد الأقصى وهو ${MAX_BATCH_PHOTOS} صورة. اكتب /finish word أو /finish excel أو /finish pdf.`);
       return;
     }
 
+    if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
+      await this.replyWithRetry(ctx, "صيغة الصورة غير مدعومة؛ ابعتها JPEG أو PNG أو WebP.");
+      return;
+    }
     const buffer = await this.downloadTelegramFile(fileId);
-    const maxPhotoBytes = 3 * 1024 * 1024;
-    const maxBatchBytes = 30 * 1024 * 1024;
-    if (buffer.length > maxPhotoBytes) {
-      await this.replyWithRetry(ctx, "الصورة أكبر من 3 ميجابايت. ابعتها كصورة عادية داخل تيليجرام عشان يضغطها أو قلل حجمها.");
+    const optimized = await sharp(buffer, { limitInputPixels: 40_000_000 })
+      .rotate()
+      .resize({ width: 1200, height: 1200, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 72, mozjpeg: true })
+      .toBuffer();
+    const maxPhotoBytes = 768 * 1024;
+    const maxBatchBytes = 45 * 1024 * 1024;
+    if (optimized.length > maxPhotoBytes) {
+      await this.replyWithRetry(ctx, "تعذر ضغط الصورة للحجم المناسب. جرّب صورة أصغر أو أقل دقة.");
       return;
     }
-    if (mimeType !== "image/jpeg" && mimeType !== "image/png") {
-      await this.replyWithRetry(ctx, "ابعت الصور بصيغة JPEG أو PNG عشان أقدر أضمّنها في تقرير Word.");
-      return;
-    }
-    if (batch.totalBytes + buffer.length > maxBatchBytes) {
-      await this.replyWithRetry(ctx, "وصلت الدفعة إلى حد 30 ميجابايت. ابدأ تحليل الصور الحالية بـ /finish أو ألغها بـ /cancelbatch.");
+    if (batch.totalBytes + optimized.length > maxBatchBytes) {
+      await this.replyWithRetry(ctx, "وصلت الدفعة إلى حد 45 ميجابايت بعد الضغط. ابدأ تحليل الصور الحالية بـ /finish أو ألغها بـ /cancelbatch.");
       return;
     }
 
-    batch.photos.push({ buffer, fileName: fileName.slice(0, 120), mimeType, note: note?.slice(0, 500) });
-    batch.totalBytes += buffer.length;
+    batch.photos.push({ buffer: optimized, fileName: fileName.slice(0, 120), mimeType: "image/jpeg", note: note?.slice(0, 500) });
+    batch.totalBytes += optimized.length;
     this.userSessions.set(ctx.from?.id || 0, session);
-    await this.replyWithRetry(ctx, `📸 تم استلام الصورة ${batch.photos.length}/50.`);
+    await this.replyWithRetry(ctx, `📸 تم استلام الصورة ${batch.photos.length}/${MAX_BATCH_PHOTOS}.`);
   }
 
   private async processInspectionBatch(
@@ -995,7 +1002,7 @@ class TelegramBotManager {
       excel: "ExcelSkill",
       pdf: "PdfSkill",
     };
-    const groupSize = 4;
+    const groupSize = 10;
     const groupCount = Math.ceil(batch.photos.length / groupSize);
     let progressMessage: any;
 
@@ -1007,6 +1014,7 @@ class TelegramBotManager {
 
       const findings: string[] = [];
       for (let offset = 0; offset < batch.photos.length; offset += groupSize) {
+        if (offset > 0) await new Promise((resolve) => setTimeout(resolve, 4000));
         const group = batch.photos.slice(offset, offset + groupSize);
         const firstIndex = offset + 1;
         const lastIndex = offset + group.length;
@@ -1023,7 +1031,7 @@ class TelegramBotManager {
         findings.push(`نتائج الصور ${firstIndex}-${lastIndex}:\n${analysis.text}`);
 
         const completed = Math.floor(offset / groupSize) + 1;
-        if (progressMessage && (completed === groupCount || completed % 3 === 0)) {
+        if (progressMessage && (completed === groupCount || completed % 2 === 0)) {
           await ctx.api.editMessageText(
             ctx.chat!.id,
             progressMessage.message_id,
@@ -1199,7 +1207,7 @@ class TelegramBotManager {
           "/excel - توليد جداول Excel (XLSX)\n" +
           "/pdf - توليد تقارير PDF رسمية\n" +
           "/ppt - توليد عروض PowerPoint (PPTX)\n" +
-          "/batch - تجميع حتى 50 صورة للمعاينة\n" +
+          "/batch - تجميع حتى 300 صورة للمعاينة\n" +
           "/finish word|excel|pdf - إنشاء تقرير من الصور\n" +
           "/cancelbatch - إلغاء دفعة الصور\n" +
           "/saveref - حفظ ملف كنموذج مرجعي\n" +
@@ -1271,7 +1279,7 @@ class TelegramBotManager {
       this.userSessions.set(uid, session);
       await this.replyWithRetry(
         ctx,
-        "📸 بدأ تجميع صور المعاينة. ابعت لحد 50 صورة، صورة واحدة أو ألبومات. لو عايز نموذج مختلف، ارفع ملف Word أو Excel أو PDF أثناء التجميع. لما تخلص اكتب /finish word أو /finish excel أو /finish pdf. الحد 30 ميجابايت إجماليًا؛ للإلغاء استخدم /cancelbatch."
+        `📸 بدأ تجميع صور المعاينة. ابعت لحد ${MAX_BATCH_PHOTOS} صورة، صورة واحدة أو ألبومات. هضغط الصور تلقائيًا. لو عايز نموذج مختلف، ارفع ملف Word أو Excel أو PDF أثناء التجميع. لما تخلص اكتب /finish word أو /finish excel أو /finish pdf. الحد 45 ميجابايت بعد الضغط؛ للإلغاء استخدم /cancelbatch.`
       );
     });
 
@@ -1331,6 +1339,10 @@ class TelegramBotManager {
       const session = this.userSessions.get(uid);
       if (!session?.batchInspection) {
         await this.replyWithRetry(ctx, "مفيش تجميع صور شغال دلوقتي.");
+        return;
+      }
+      if (session.batchInspection.processing) {
+        await this.replyWithRetry(ctx, "التحليل بدأ بالفعل؛ استنى ما يخلص قبل بدء دفعة جديدة.");
         return;
       }
       session.batchInspection = undefined;
