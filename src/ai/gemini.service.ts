@@ -537,7 +537,7 @@ ${contextBlock}
 TARGET LANGUAGE: ${langInstruction}
 
 CRITICAL RULES FOR DYNAMIC EXCEL GENERATION:
-1. NEVER use generic placeholder data. Customize the sheetName, title, column headers, and 6 to 8 realistic data rows to match the exact subject of the user's request.
+1. Customize the sheetName, title, and column headers to the exact subject. Never invent real-world business facts such as employee names, salaries, customer records, prices, quantities, or dates. When the user supplies data, use it faithfully. When they ask for a reusable workbook but provide no data, create 8 clearly blank input rows and put formulas in calculated columns; those formulas must return a blank display until their required inputs are entered. Do not present sample figures as real data.
 2. Column Mapping:
    - Column A is index 0 in each row array.
    - Column B is index 1.
@@ -553,22 +553,22 @@ CRITICAL RULES FOR DYNAMIC EXCEL GENERATION:
      Headers: ["Emp ID", "Employee Name", "Department", "Basic Salary", "Allowances", "Gross Salary", "Tax Deduction", "Insurance/Other Deduction", "Total Deductions", "Net Salary"]
      In each row:
      - Col D (Basic), Col E (Allowances), Col G (Tax), Col H (Insurance) are numeric values (e.g. "8500", "1500", "450", "350").
-     - Col F (Gross Salary) MUST be: "=D{ROW}+E{ROW}"
-     - Col I (Total Deductions) MUST be: "=G{ROW}+H{ROW}"
-     - Col J (Net Salary) MUST be: "=F{ROW}-I{ROW}"
+     - Col F (Gross Salary) MUST be: "=IF(COUNT(D{ROW}:E{ROW})=0,\"\",D{ROW}+E{ROW})"
+     - Col I (Total Deductions) MUST be: "=IF(COUNT(G{ROW}:H{ROW})=0,\"\",G{ROW}+H{ROW})"
+     - Col J (Net Salary) MUST be: "=IF(COUNT(D{ROW}:E{ROW})=0,\"\",F{ROW}-I{ROW})"
    - Example B (Reinforcement Steel / Rebar Quantities):
      Headers: ["Element / Mark", "Bar Diameter (mm)", "Number of Bars", "Bar Length (m)", "Total Length (m)", "Unit Weight (kg/m)", "Total Weight (kg)"]
      In each row:
      - Col B (Diameter e.g. 12, 16, 20), Col C (Count), Col D (Length) are numbers.
-     - Col E (Total Length) MUST be: "=C{ROW}*D{ROW}"
-     - Col F (Unit Weight = D²/162) MUST be: "=ROUND((B{ROW}^2)/162, 3)"
-     - Col G (Total Weight) MUST be: "=ROUND(E{ROW}*F{ROW}, 2)"
+     - Col E (Total Length) MUST be: "=IF(COUNT(C{ROW}:D{ROW})=0,\"\",C{ROW}*D{ROW})"
+     - Col F (Unit Weight = D²/162) MUST be: "=IF(B{ROW}=\"\",\"\",ROUND((B{ROW}^2)/162, 3))"
+     - Col G (Total Weight) MUST be: "=IF(COUNT(C{ROW}:D{ROW})=0,\"\",ROUND(E{ROW}*F{ROW}, 2))"
    - Example C (Concrete Quantity Calculations):
      Headers: ["Element ID", "Element Description", "Count", "Length (m)", "Width (m)", "Depth/Height (m)", "Unit Volume (m3)", "Total Concrete Volume (m3)"]
      In each row:
      - Col C (Count), Col D (Length), Col E (Width), Col F (Depth/Height) are numbers.
-     - Col G (Unit Volume) MUST be: "=ROUND(D{ROW}*E{ROW}*F{ROW}, 3)"
-     - Col H (Total Concrete Volume) MUST be: "=ROUND(C{ROW}*G{ROW}, 3)"
+     - Col G (Unit Volume) MUST be: "=IF(COUNT(D{ROW}:F{ROW})=0,\"\",ROUND(D{ROW}*E{ROW}*F{ROW}, 3))"
+     - Col H (Total Concrete Volume) MUST be: "=IF(COUNT(C{ROW}:F{ROW})=0,\"\",ROUND(C{ROW}*G{ROW}, 3))"
    - For any other request, design appropriate columns and real "={ROW}" formulas matching that exact domain!
 4. Do NOT add a "TOTAL" row at the bottom of "rows" — the Excel engine automatically generates the bottom TOTAL row with =SUM(...) formulas.`;
 

@@ -95,6 +95,21 @@ export class FileGenerationAgent {
       return { isFileRequest: true, fileType: "excel", skillName: "ExcelSkill" };
     }
 
+    // Infer a useful default format when the user asks for an artifact but does
+    // not name DOCX/XLSX/PDF. Data-heavy requests become workbooks; narrative
+    // reports and documents become Word files.
+    const isGenericArtifactRequest =
+      hasActionIntent &&
+      /(\b(file|document|report|template|spreadsheet|sheet|table|budget|inventory|expenses|sales|payroll|invoice)\b|ملف|مستند|تقرير|نموذج|كشف|جدول|ميزانية|موازنة|مصروفات|مبيعات|مخزون|رواتب|فواتير)/i.test(p);
+    if (isGenericArtifactRequest) {
+      const isDataArtifact =
+        /(\b(spreadsheet|sheet|table|budget|inventory|expenses|payroll|invoice|data)\b|جدول|كشف|ميزانية|موازنة|مصروفات|مخزون|رواتب|فواتير|بيانات)/i.test(p) &&
+        !/(\breport\b|تقرير)/i.test(p);
+      return isDataArtifact
+        ? { isFileRequest: true, fileType: "excel", skillName: "ExcelSkill" }
+        : { isFileRequest: true, fileType: "word", skillName: "WordSkill" };
+    }
+
     return { isFileRequest: false };
   }
 
