@@ -7,6 +7,9 @@ type SessionRecord = {
   language: "ar" | "en";
   history: Array<{ role: "user" | "model"; content: string }>;
   activeSkill?: string;
+  memorySummary?: string;
+  memoryTopics?: string[];
+  memoryUpdatedAt?: number;
   updatedAt: number;
 };
 
@@ -116,7 +119,24 @@ class TelegramSessionStore {
     if (!response.ok) throw new Error(`Firestore session read failed (${response.status})`);
     const data = await response.json() as { fields?: { payload?: { stringValue?: string } } };
     if (!data.fields?.payload?.stringValue) return null;
-    try { return JSON.parse(data.fields.payload.stringValue) as SessionRecord; } catch { return null; }
+    try {
+      const parsed = JSON.parse(data.fields.payload.stringValue) as Partial<SessionRecord>;
+      if (!Array.isArray(parsed.history) || (parsed.language !== "ar" && parsed.language !== "en")) return null;
+      return {
+        language: parsed.language,
+        history: parsed.history
+          .filter((item) => item && (item.role === "user" || item.role === "model") && typeof item.content === "string")
+          .slice(-40)
+          .map((item) => ({ role: item.role!, content: item.content!.slice(0, 6000) })),
+        activeSkill: typeof parsed.activeSkill === "string" ? parsed.activeSkill : undefined,
+        memorySummary: typeof parsed.memorySummary === "string" ? parsed.memorySummary.slice(0, 5000) : "",
+        memoryTopics: Array.isArray(parsed.memoryTopics)
+          ? parsed.memoryTopics.filter((topic): topic is string => typeof topic === "string").slice(0, 20)
+          : [],
+        memoryUpdatedAt: typeof parsed.memoryUpdatedAt === "number" ? parsed.memoryUpdatedAt : undefined,
+        updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+      };
+    } catch { return null; }
   }
 
   public async save(uid: number, session: SessionRecord): Promise<void> {
@@ -126,7 +146,21 @@ class TelegramSessionStore {
     const response = await fetch(url, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ fields: { payload: { stringValue: JSON.stringify(session) } } }),
+      body: JSON.stringify({
+        fields: {
+          payload: {
+            stringValue: JSON.stringify({
+              ...session,
+              history: session.history.slice(-40).map((item) => ({
+                role: item.role,
+                content: item.content.slice(0, 6000),
+              })),
+              memorySummary: (session.memorySummary || "").slice(0, 5000),
+              memoryTopics: (session.memoryTopics || []).slice(0, 20),
+            }),
+          },
+        },
+      }),
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) throw new Error(`Firestore session write failed (${response.status})`);

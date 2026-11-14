@@ -11,13 +11,13 @@ This Blueprint runs the existing Node server and the frontend together as one Do
    - `TELEGRAM_WEBHOOK_SECRET`: random letters, numbers, `_` or `-`, at least 32 characters.
    - `ADMIN_SECRET`: random secret at least 32 characters.
    - `GEMINI_API_KEY`: a Google AI Studio API key on the free tier.
-   - `GOOGLE_SERVICE_ACCOUNT_JSON_B64`: base64-encoded Firebase service account JSON. Grant it only the Cloud Datastore User role.
+   - `GOOGLE_SERVICE_ACCOUNT_JSON_B64`: required on Render for persistent Telegram sessions and long-term memory; base64-encoded service-account JSON with only the Cloud Datastore User role (`roles/datastore.user`). Create/download the JSON in Google Cloud IAM & Admin > Service Accounts, encode it locally, then paste it directly into Render. Never commit or share the JSON key.
 4. Create the service. Render injects `RENDER_EXTERNAL_URL`; the app uses it to register the Telegram webhook automatically.
 5. In Firebase Console > Authentication > Settings > Authorized domains, add the Render hostname if Google sign-in is used.
 6. Open the Render service URL and check `/healthz`. Then message the bot on Telegram.
 
 ## Free-tier limits
 
-The Blueprint selects Render's free web-service plan. Free services sleep after 15 minutes without inbound traffic and can take around a minute to wake. A Telegram update may therefore be delayed while the service wakes. Free service storage is ephemeral, so durable session history uses Firestore. Render's free quota and policies can change; review them before production use. This is a free trial-grade setup, not a 24/7 uptime guarantee.
+The Blueprint selects Render's free web-service plan. Free services sleep after 15 minutes without inbound traffic and can take around a minute to wake. A Telegram update may therefore be delayed while the service wakes. Free service storage is ephemeral, so durable session history and long-term memory use Firestore. Long-term summaries are refreshed periodically from older conversation turns; `/memory` shows the saved summary and `/clear` deletes it. Render's free quota and policies can change; review them before production use. This is a free trial-grade setup, not a 24/7 uptime guarantee.
 
 The Firebase project remains on its current plan; this setup does not enable Blaze. Firestore free quotas still apply. Gemini free-tier quotas also apply, and free-tier prompts may be used by Google to improve its products.

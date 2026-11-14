@@ -259,6 +259,7 @@ export async function createApp() {
         webhookSecretConfigured: telegramBotManager.isWebhookSecretConfigured(),
         databaseConfigured: telegramSessionStore.isConfigured(),
         telegramSessionPersistenceConfigured: telegramSessionStore.isConfigured(),
+        longTermMemoryConfigured: telegramSessionStore.isConfigured(),
         adminSecretConfigured: Boolean(process.env.ADMIN_SECRET),
       },
       modelsAvailable: [

@@ -270,6 +270,56 @@ Rules:
     };
   }
 
+  /** Compress archived turns into a small, privacy-conscious user memory profile. */
+  public async summarizeLongTermMemory(params: {
+    currentSummary: string;
+    archivedTurns: Array<{ role: "user" | "model"; content: string }>;
+    language: "ar" | "en";
+  }): Promise<{ summary: string; topics: string[] }> {
+    const ai = this.getClient();
+    const safeTurns = params.archivedTurns.map((turn) => ({
+      role: turn.role === "user" ? "User" : "Assistant",
+      content: turn.content
+        .replace(/\b\d{7,14}:[A-Za-z0-9_-]{25,}\b/g, "[redacted credential]")
+        .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted credential]")
+        .slice(0, 2500),
+    }));
+    const prompt = `Update a concise long-term memory profile for this Telegram assistant user.
+Return only durable facts the user explicitly shared, stable preferences, ongoing projects, decisions, and unresolved follow-ups that may help weeks later. Preserve the prior profile if still relevant. Remove stale or contradicted facts. Do not save passwords, API keys, access tokens, financial account details, private document contents, guesses, or sensitive personal data. Do not infer a fact from an assistant response. Keep the summary under 1200 characters and return at most 12 short topic labels.
+Output language: ${params.language === "ar" ? "Arabic" : "English"}.
+Prior memory: ${params.currentSummary || "(none)"}
+Archived conversation turns: ${JSON.stringify(safeTurns)}`;
+
+    const { result } = await this.withRetryAndFallback(
+      (modelToUse) => ai.models.generateContent({
+        model: modelToUse,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summary: { type: Type.STRING },
+              topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: ["summary", "topics"],
+          },
+        },
+      }),
+      "gemini-3.8-flash",
+      "gemini-3.1-flash-lite",
+      12000
+    );
+
+    const parsed = JSON.parse((result.text || "{}").trim()) as { summary?: unknown; topics?: unknown };
+    return {
+      summary: typeof parsed.summary === "string" ? parsed.summary.slice(0, 1200) : params.currentSummary,
+      topics: Array.isArray(parsed.topics)
+        ? parsed.topics.filter((topic): topic is string => typeof topic === "string").slice(0, 12)
+        : [],
+    };
+  }
+
   /**
    * Image Understanding & Engineering Drawing Analysis using gemini-4-argon
    */

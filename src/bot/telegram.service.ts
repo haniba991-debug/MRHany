@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
+import { serverGemini } from "../ai/gemini.service";
 import { agentOrchestrator } from "../agents/orchestrator";
 import { logger } from "../utils/logger";
 import { withRetry } from "../utils/retry";
@@ -45,6 +46,9 @@ interface TelegramUserSession {
   activeSkill?: string;
   language: "ar" | "en";
   history: Array<{ role: "user" | "model"; content: string }>;
+  memorySummary: string;
+  memoryTopics: string[];
+  memoryUpdatedAt?: number;
   updatedAt: number;
 }
 
@@ -71,6 +75,7 @@ class TelegramBotManager {
   };
 
   private userSessions = new Map<number, TelegramUserSession>();
+  private memoryCompactions = new Set<number>();
 
   public getExecutionMode(): "async" | "sync" {
     return process.env.WEBHOOK_EXECUTION_MODE === "sync" ? "sync" : "async";
@@ -379,7 +384,7 @@ class TelegramBotManager {
       const me = newBot.botInfo;
       this.activeToken = token;
 
-      // Register official 13 commands cleanly (rate-limit resilient)
+      // Register bot commands cleanly (rate-limit resilient)
       await withRetry(
         () =>
           newBot.api.setMyCommands([
@@ -394,6 +399,7 @@ class TelegramBotManager {
             { command: "pdf", description: "إنشاء تقرير PDF / Generate PDF" },
             { command: "ppt", description: "إنشاء عرض PowerPoint / Generate PPTX" },
             { command: "history", description: "سجل المحادثات / View conversation history" },
+            { command: "memory", description: "ما الذي يتذكره البوت / View long-term memory" },
             { command: "settings", description: "إدارة الإعدادات / Manage settings" },
             { command: "clear", description: "مسح المحادثة الحالية / Clear context" },
           ]),
@@ -755,6 +761,8 @@ class TelegramBotManager {
     const fresh: TelegramUserSession = {
       language: "ar",
       history: [],
+      memorySummary: "",
+      memoryTopics: [],
       updatedAt: Date.now(),
     };
     this.userSessions.set(uid, fresh);
@@ -780,6 +788,52 @@ class TelegramBotManager {
     };
     this.status.processedTelegramMessages += 1;
     this.status.recentActivity = [newEntry, ...this.status.recentActivity.slice(0, 19)];
+  }
+
+  private async compactLongTermMemory(uid: number, session: TelegramUserSession): Promise<void> {
+    const keepTurns = 24;
+    if (
+      session.history.length <= 40 ||
+      this.memoryCompactions.has(uid) ||
+      !telegramSessionStore.isConfigured()
+    ) return;
+
+    this.memoryCompactions.add(uid);
+    const archiveCount = session.history.length - keepTurns;
+    const archivedTurns = session.history.slice(0, archiveCount);
+    try {
+      const memory = await serverGemini.summarizeLongTermMemory({
+        currentSummary: session.memorySummary,
+        archivedTurns,
+        language: session.language,
+      });
+
+      // Avoid overwriting turns that arrived while the summary was being generated.
+      const sameArchivedPrefix = archivedTurns.every((turn, index) => {
+        const current = session.history[index];
+        return current?.role === turn.role && current.content === turn.content;
+      });
+      if (this.userSessions.get(uid) !== session || !sameArchivedPrefix) return;
+
+      session.memorySummary = memory.summary;
+      session.memoryTopics = memory.topics;
+      session.memoryUpdatedAt = Date.now();
+      session.history = session.history.slice(archiveCount);
+      session.updatedAt = Date.now();
+      await telegramSessionStore.save(uid, session);
+      logger.info("Long-term Telegram memory compacted", {
+        userId: uid,
+        archivedTurns: archiveCount,
+        topicCount: memory.topics.length,
+      });
+    } catch (err: any) {
+      logger.warn("Long-term Telegram memory compaction failed", {
+        userId: uid,
+        error: err?.message || String(err),
+      });
+    } finally {
+      this.memoryCompactions.delete(uid);
+    }
   }
 
   private registerHandlers(bot: Bot) {
@@ -812,7 +866,13 @@ class TelegramBotManager {
       if (!this.userSessions.has(uid)) {
         try {
           const saved = await telegramSessionStore.load(uid);
-          if (saved) this.userSessions.set(uid, saved);
+          if (saved) {
+            this.userSessions.set(uid, {
+              ...saved,
+              memorySummary: saved.memorySummary || "",
+              memoryTopics: saved.memoryTopics || [],
+            });
+          }
         } catch (err: any) {
           logger.warn("Telegram session restore failed; continuing with an in-memory session", {
             userId: uid,
@@ -883,7 +943,7 @@ class TelegramBotManager {
       }
       await this.replyWithRetry(
         ctx,
-        "✅ تم مسح سجل المحادثة والسياق الحالي بنجاح. كيف يمكنني مساعدتك الآن؟"
+        "✅ تم مسح سجل المحادثة والذاكرة طويلة الأمد. كيف يمكنني مساعدتك الآن؟"
       );
     });
 
@@ -900,6 +960,26 @@ class TelegramBotManager {
         .map((m) => `${m.role === "user" ? "👤 أنت" : "🤖 مستر هاني"}: ${m.content.slice(0, 120)}`)
         .join("\n\n");
       await this.replyWithRetry(ctx, `📜 آخر المحادثات المسجلة:\n\n${formatted}`);
+    });
+
+    bot.command("memory", async (ctx) => {
+      const uid = ctx.from?.id || 0;
+      const session = this.getSession(uid);
+      if (!telegramSessionStore.isConfigured()) {
+        await this.replyWithRetry(
+          ctx,
+          "🧠 الذاكرة طويلة الأمد غير مفعّلة بعد؛ يلزم ربط بيانات اعتماد Firestore الآمنة في إعدادات الاستضافة."
+        );
+        return;
+      }
+      const summary = session.memorySummary.trim();
+      const topics = session.memoryTopics.length ? `\n\nالمواضيع: ${session.memoryTopics.join("، ")}` : "";
+      await this.replyWithRetry(
+        ctx,
+        summary
+          ? `🧠 دي خلاصة المعلومات والمواضيع اللي محتفظ بيها عشان أفتكرها في المحادثات القادمة:\n\n${summary}${topics}\n\nلمسحها استخدم /clear.`
+          : "🧠 لسه مفيش ملخص طويل الأمد. هحفظ تفضيلاتك ومشاريعك ومواضيع المتابعة المهمة تلقائيًا مع استمرار المحادثة. استخدم /clear لمسح الذاكرة."
+      );
     });
 
     // 5. /settings command
@@ -1201,6 +1281,7 @@ class TelegramBotManager {
           language: session.language,
           explicitSkill: session.activeSkill,
           history: session.history.slice(-8),
+          memoryContext: session.memorySummary,
           fileBase64,
           fileMimeType,
           fileName,
@@ -1211,8 +1292,8 @@ class TelegramBotManager {
 
         session.history.push({ role: "user", content: text || `[${fileName || "Media"}]` });
         session.history.push({ role: "model", content: res.replyText });
-        if (session.history.length > 30) {
-          session.history = session.history.slice(-24);
+        if (session.history.length > 40 && !telegramSessionStore.isConfigured()) {
+          session.history = session.history.slice(-40);
         }
         session.activeSkill = res.needsClarification ? res.skillUsed : undefined;
         this.userSessions.set(uid, session);
@@ -1252,6 +1333,9 @@ class TelegramBotManager {
           replyPreview: res.replyText.slice(0, 140),
           generatedFileName: res.generatedFile?.fileName,
         });
+        if (session.history.length > 40) {
+          void this.compactLongTermMemory(uid, session);
+        }
       } catch (err: any) {
         logger.error("Telegram multimodal message processing error", {
           error: err?.message || String(err),
