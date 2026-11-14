@@ -10,6 +10,7 @@ type SessionRecord = {
   memorySummary?: string;
   memoryTopics?: string[];
   memoryUpdatedAt?: number;
+  referenceTemplate?: { fileName: string; blueprint: string; savedAt: number };
   updatedAt: number;
 };
 
@@ -134,6 +135,15 @@ class TelegramSessionStore {
           ? parsed.memoryTopics.filter((topic): topic is string => typeof topic === "string").slice(0, 20)
           : [],
         memoryUpdatedAt: typeof parsed.memoryUpdatedAt === "number" ? parsed.memoryUpdatedAt : undefined,
+        referenceTemplate: parsed.referenceTemplate &&
+          typeof parsed.referenceTemplate.fileName === "string" &&
+          typeof parsed.referenceTemplate.blueprint === "string"
+          ? {
+              fileName: parsed.referenceTemplate.fileName.slice(0, 180),
+              blueprint: parsed.referenceTemplate.blueprint.slice(0, 8000),
+              savedAt: typeof parsed.referenceTemplate.savedAt === "number" ? parsed.referenceTemplate.savedAt : Date.now(),
+            }
+          : undefined,
         updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
       };
     } catch { return null; }
@@ -143,6 +153,11 @@ class TelegramSessionStore {
     const url = this.documentUrl(uid);
     const token = await this.getAccessToken();
     if (!url || !token) return;
+    const safeSession = { ...session } as SessionRecord & { batchInspection?: unknown; awaitingReference?: unknown };
+    // Uploaded images and source templates are temporary working material and
+    // must never be serialized into the persistent conversation document.
+    delete safeSession.batchInspection;
+    delete safeSession.awaitingReference;
     const response = await fetch(url, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -150,13 +165,20 @@ class TelegramSessionStore {
         fields: {
           payload: {
             stringValue: JSON.stringify({
-              ...session,
-              history: session.history.slice(-40).map((item) => ({
+              ...safeSession,
+              history: safeSession.history.slice(-40).map((item) => ({
                 role: item.role,
                 content: item.content.slice(0, 6000),
               })),
-              memorySummary: (session.memorySummary || "").slice(0, 5000),
-              memoryTopics: (session.memoryTopics || []).slice(0, 20),
+              memorySummary: (safeSession.memorySummary || "").slice(0, 5000),
+              memoryTopics: (safeSession.memoryTopics || []).slice(0, 20),
+              referenceTemplate: safeSession.referenceTemplate
+                ? {
+                    fileName: safeSession.referenceTemplate.fileName.slice(0, 180),
+                    blueprint: safeSession.referenceTemplate.blueprint.slice(0, 8000),
+                    savedAt: safeSession.referenceTemplate.savedAt,
+                  }
+                : undefined,
             }),
           },
         },

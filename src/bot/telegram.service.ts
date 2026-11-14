@@ -2,6 +2,10 @@ import crypto from "crypto";
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import { serverGemini } from "../ai/gemini.service";
 import { agentOrchestrator } from "../agents/orchestrator";
+import { DocumentParser } from "../documents/document.parser";
+import { DocxGenerator } from "../generators/docx.generator";
+import { FileValidator } from "../generators/file-validator";
+import { TempFileStorage } from "../generators/file-storage";
 import { logger } from "../utils/logger";
 import { withRetry } from "../utils/retry";
 import { UpdateDeduplicator } from "./update-dedup";
@@ -49,8 +53,27 @@ interface TelegramUserSession {
   memorySummary: string;
   memoryTopics: string[];
   memoryUpdatedAt?: number;
+  referenceTemplate?: { fileName: string; blueprint: string; savedAt: number };
+  awaitingReference?: boolean;
+  batchInspection?: {
+    photos: Array<{ buffer: Buffer; fileName: string; mimeType: string; note?: string }>;
+    totalBytes: number;
+    templateText?: string;
+    templateFileName?: string;
+    processing?: boolean;
+  };
   updatedAt: number;
 }
+
+type InspectionOutputFormat = "word" | "excel" | "pdf";
+
+const DEFAULT_ROOM_DEFECTS_REFERENCE = [
+  "عنوان عربي في أعلى المستند: تقرير ملاحظات الغرف مع نطاق أرقام الغرف.",
+  "تخطيط أدلة الصور في شبكة من عمودين وصفين (أربع صور بكل مجموعة)، مع وصف قصير ملاصق لكل صورة.",
+  "كل ملاحظة تربط رقم الغرفة والعنصر/الموقع ووصف العيب بصورة دليل واضحة.",
+  "استخدم عناوين قصيرة بالعربية، واتجاه كتابة من اليمين إلى اليسار، وحدود خفيفة للجداول.",
+  "لا تنقل أرقام الغرف أو أسماء العناصر أو العيوب من التقرير المرجعي؛ استخدم فقط ما يظهر أو ما يكتبه المستخدم في الدفعة الجديدة.",
+].join("\n");
 
 class TelegramBotManager {
   private bot: Bot | null = null;
@@ -400,6 +423,12 @@ class TelegramBotManager {
             { command: "ppt", description: "إنشاء عرض PowerPoint / Generate PPTX" },
             { command: "history", description: "سجل المحادثات / View conversation history" },
             { command: "memory", description: "ما الذي يتذكره البوت / View long-term memory" },
+            { command: "batch", description: "بدء تجميع صور الفحص / Start a photo inspection batch" },
+            { command: "finish", description: "تحليل الصور وإصدار التقرير / Finish batch and create report" },
+            { command: "cancelbatch", description: "إلغاء تجميع الصور / Cancel photo batch" },
+            { command: "saveref", description: "حفظ ملف كنموذج مرجعي / Save a report template" },
+            { command: "refs", description: "عرض النموذج المرجعي / View saved template" },
+            { command: "forgetref", description: "حذف النموذج المرجعي / Remove saved template" },
             { command: "settings", description: "إدارة الإعدادات / Manage settings" },
             { command: "clear", description: "مسح المحادثة الحالية / Clear context" },
           ]),
@@ -763,6 +792,7 @@ class TelegramBotManager {
       history: [],
       memorySummary: "",
       memoryTopics: [],
+      referenceTemplate: undefined,
       updatedAt: Date.now(),
     };
     this.userSessions.set(uid, fresh);
@@ -836,6 +866,245 @@ class TelegramBotManager {
     }
   }
 
+  private async extractReferenceBlueprint(
+    fileId: string,
+    fileName: string,
+    mimeType: string
+  ): Promise<string> {
+    const lowerName = fileName.toLowerCase();
+    const buffer = await this.downloadTelegramFile(fileId);
+    let extracted = "";
+
+    if (lowerName.endsWith(".pdf") || mimeType.includes("pdf")) {
+      const result = await serverGemini.analyzeImage({
+        base64Data: buffer.toString("base64"),
+        mimeType: "application/pdf",
+        prompt: "استخرج بنية هذا النموذج فقط: عنوانه، ترتيب الأقسام، أسماء الجداول والأعمدة، وأنواع الخانات. لا تنقل الأسماء أو الأرقام أو بيانات الأشخاص الموجودة فيه.",
+      });
+      extracted = result.text;
+    } else {
+      const parsed = await DocumentParser.extractDocument(buffer, mimeType, fileName);
+      extracted = parsed.extractedText;
+    }
+
+    if (!extracted.trim()) {
+      throw new Error("الملف النموذجي لا يحتوي على نص أو جداول قابلة للاستخراج.");
+    }
+    return extracted.slice(0, 8000);
+  }
+
+  private async captureInspectionTemplate(
+    ctx: Context,
+    session: TelegramUserSession,
+    fileId: string,
+    fileName: string,
+    mimeType: string
+  ): Promise<void> {
+    const batch = session.batchInspection;
+    if (!batch) return;
+    batch.templateText = await this.extractReferenceBlueprint(fileId, fileName, mimeType);
+    batch.templateFileName = fileName.slice(0, 180);
+    this.userSessions.set(ctx.from?.id || 0, session);
+    await this.replyWithRetry(
+      ctx,
+      `✅ حفظت شكل الملف النموذجي (${fileName}). هستخدم ترتيب الأقسام والجداول فقط، وبعدها ابعت صور المعاينة.`
+    );
+  }
+
+  private async saveReferenceTemplate(
+    ctx: Context,
+    session: TelegramUserSession,
+    fileId: string,
+    fileName: string,
+    mimeType: string
+  ): Promise<void> {
+    const blueprint = await this.extractReferenceBlueprint(fileId, fileName, mimeType);
+    session.referenceTemplate = { fileName: fileName.slice(0, 180), blueprint, savedAt: Date.now() };
+    session.awaitingReference = false;
+    this.userSessions.set(ctx.from?.id || 0, session);
+    const persistenceNote = telegramSessionStore.isConfigured()
+      ? "تقدر تبدأ دفعة صور بـ /batch، وهستخدم المرجع تلقائيًا."
+      : "المرجع متاح في الجلسة الحالية، لكن الحفظ بعد إعادة تشغيل الخدمة يتطلب إكمال ربط Firestore في Render.";
+    await this.replyWithRetry(
+      ctx,
+      `✅ حفظت بنية الملف «${fileName}» كمرجع لحسابك. ${persistenceNote} لتغييره ارفع مرجعًا جديدًا بـ /saveref.`
+    );
+  }
+
+  private async captureInspectionPhoto(
+    ctx: Context,
+    session: TelegramUserSession,
+    fileId: string,
+    fileName: string,
+    mimeType: string = "image/jpeg",
+    note?: string
+  ): Promise<void> {
+    const batch = session.batchInspection;
+    if (!batch) return;
+    if (batch.processing) {
+      await this.replyWithRetry(ctx, "بدأ تحليل الدفعة بالفعل؛ استنى النتيجة قبل إضافة صور جديدة.");
+      return;
+    }
+    if (batch.photos.length >= 50) {
+      await this.replyWithRetry(ctx, "وصلت للحد الأقصى وهو 50 صورة. اكتب /finish word أو /finish excel أو /finish pdf.");
+      return;
+    }
+
+    const buffer = await this.downloadTelegramFile(fileId);
+    const maxPhotoBytes = 3 * 1024 * 1024;
+    const maxBatchBytes = 30 * 1024 * 1024;
+    if (buffer.length > maxPhotoBytes) {
+      await this.replyWithRetry(ctx, "الصورة أكبر من 3 ميجابايت. ابعتها كصورة عادية داخل تيليجرام عشان يضغطها أو قلل حجمها.");
+      return;
+    }
+    if (mimeType !== "image/jpeg" && mimeType !== "image/png") {
+      await this.replyWithRetry(ctx, "ابعت الصور بصيغة JPEG أو PNG عشان أقدر أضمّنها في تقرير Word.");
+      return;
+    }
+    if (batch.totalBytes + buffer.length > maxBatchBytes) {
+      await this.replyWithRetry(ctx, "وصلت الدفعة إلى حد 30 ميجابايت. ابدأ تحليل الصور الحالية بـ /finish أو ألغها بـ /cancelbatch.");
+      return;
+    }
+
+    batch.photos.push({ buffer, fileName: fileName.slice(0, 120), mimeType, note: note?.slice(0, 500) });
+    batch.totalBytes += buffer.length;
+    this.userSessions.set(ctx.from?.id || 0, session);
+    await this.replyWithRetry(ctx, `📸 تم استلام الصورة ${batch.photos.length}/50.`);
+  }
+
+  private async processInspectionBatch(
+    ctx: Context,
+    uid: number,
+    session: TelegramUserSession,
+    format: InspectionOutputFormat
+  ): Promise<void> {
+    const batch = session.batchInspection;
+    if (!batch) return;
+    if (batch.photos.length === 0) {
+      await this.replyWithRetry(ctx, "لسه ما استلمتش صور. ابعت صورة واحدة أو ألبوم، وبعدها اختار نوع الملف بـ /finish.");
+      return;
+    }
+    if (batch.processing) {
+      await this.replyWithRetry(ctx, "تحليل الصور شغال بالفعل، أول ما يخلص هبعت لك الملف.");
+      return;
+    }
+
+    batch.processing = true;
+    const formatSkills: Record<InspectionOutputFormat, string> = {
+      word: "WordSkill",
+      excel: "ExcelSkill",
+      pdf: "PdfSkill",
+    };
+    const groupSize = 4;
+    const groupCount = Math.ceil(batch.photos.length / groupSize);
+    let progressMessage: any;
+
+    try {
+      progressMessage = await this.replyWithRetry(
+        ctx,
+        `⏳ بدأت تحليل ${batch.photos.length} صورة على ${groupCount} مجموعات، وبعدها هجهز ملف ${format.toUpperCase()}. ممكن ياخد بضع دقائق.`
+      );
+
+      const findings: string[] = [];
+      for (let offset = 0; offset < batch.photos.length; offset += groupSize) {
+        const group = batch.photos.slice(offset, offset + groupSize);
+        const firstIndex = offset + 1;
+        const lastIndex = offset + group.length;
+        const analysis = await serverGemini.analyzeImage({
+          base64Data: group[0].buffer.toString("base64"),
+          mimeType: group[0].mimeType,
+          images: group.map((photo) => ({
+            base64Data: photo.buffer.toString("base64"),
+            mimeType: photo.mimeType,
+          })),
+          isEngineeringMode: true,
+          prompt: `حلل صور المعاينة من رقم ${firstIndex} إلى ${lastIndex}، بالترتيب. ملاحظات المستخدم على الصور (إن وجدت): ${group.map((photo, index) => photo.note ? `الصورة ${firstIndex + index}: ${photo.note}` : "").filter(Boolean).join(" | ") || "لا توجد ملاحظات نصية"}. لكل عيب مرئي اذكر رقم الصورة، رقم الغرفة أو المكان/العنصر إذا ظهر بالصورة أو كتبه المستخدم، وصف الدليل المرئي، درجة الخطورة (منخفضة/متوسطة/عالية)، والتوصية. ميّز بين العيب المؤكد والاحتمال، ولا تخترع أبعادًا أو تفاصيل غير ظاهرة. إذا لم يظهر عيب في صورة فاذكر ذلك. أجب بالعربية وبنقاط منظمة.`,
+        });
+        findings.push(`نتائج الصور ${firstIndex}-${lastIndex}:\n${analysis.text}`);
+
+        const completed = Math.floor(offset / groupSize) + 1;
+        if (progressMessage && (completed === groupCount || completed % 3 === 0)) {
+          await ctx.api.editMessageText(
+            ctx.chat!.id,
+            progressMessage.message_id,
+            `⏳ تحليل الصور: ${completed}/${groupCount} مجموعات اكتملت.`
+          ).catch(() => {});
+        }
+      }
+
+      const outputLabel = format === "word" ? "Word" : format === "excel" ? "Excel" : "PDF";
+      const templateContext = batch.templateText
+        ? `\n\nاتبع بنية الملف النموذجي (${batch.templateFileName || "ملف مرفق"}) من حيث ترتيب الأقسام والعناوين وأسماء الأعمدة فقط. لا تنقل أي أسماء أو أرقام أو نتائج من محتوى النموذج.\nبنية النموذج المستخرجة:\n${batch.templateText}`
+        : "";
+      const reportPrompt = `أنشئ تقرير معاينة احترافي بصيغة ${outputLabel} اعتمادًا على نتائج فحص ${batch.photos.length} صورة مرفقة أدناه. اجعل كل ملاحظة مرتبطة برقم الصورة، واجمع العيوب المتشابهة دون تكرار، ورتبها حسب الخطورة. أضف ملخصًا تنفيذيًا، وجدولًا منظمًا للعيوب، والتوصيات، وحدود المعاينة. لا تضف عيوبًا أو قياسات أو بيانات غير موجودة في نتائج التحليل.\n\nنتائج التحليل:\n${findings.join("\n\n")}${templateContext}`;
+      const generated = await agentOrchestrator.execute({
+        prompt: reportPrompt,
+        language: session.language,
+        explicitSkill: formatSkills[format],
+        history: session.history.slice(-8),
+        memoryContext: session.memorySummary,
+      });
+
+      if (format === "word" && generated.generatedFile?.fileType === "docx") {
+        const docxBuffer = await DocxGenerator.generate({
+          ...(generated.generatedFile.structuredSpec || {}),
+          isRtl: session.language === "ar",
+          inspectionPhotos: batch.photos.map((photo, index) => ({
+            photoNumber: index + 1,
+            caption: `صورة ${index + 1}`,
+            imageBase64: photo.buffer.toString("base64"),
+            mimeType: photo.mimeType,
+          })),
+        });
+        const validation = await FileValidator.validateDocx(docxBuffer);
+        if (!validation.valid) throw new Error(validation.error || "فشل التحقق من تقرير Word");
+        const stored = TempFileStorage.saveGeneratedFile(docxBuffer, generated.generatedFile.fileName);
+        generated.generatedFile.fileName = stored.fileName;
+        generated.generatedFile.filePath = stored.filePath;
+        generated.generatedFile.savedFilePath = stored.filePath;
+        generated.generatedFile.base64Data = docxBuffer.toString("base64");
+      }
+
+      if (progressMessage) {
+        await ctx.api.editMessageText(ctx.chat!.id, progressMessage.message_id, "✅ اكتمل تحليل الصور وتجهيز التقرير.").catch(() => {});
+      }
+      if (generated.replyText) await this.replyWithRetry(ctx, generated.replyText.slice(0, 3500));
+      if (generated.generatedFile) {
+        const buffer = Buffer.from(generated.generatedFile.base64Data, "base64");
+        await this.replyDocumentWithRetry(
+          ctx,
+          new InputFile(buffer, generated.generatedFile.fileName),
+          { caption: `📄 تقرير معاينة ${batch.photos.length} صورة — ${generated.generatedFile.fileName}`.slice(0, 950) }
+        );
+      }
+
+      session.history.push(
+        { role: "user", content: `تحليل دفعة صور (${batch.photos.length}) وإنشاء تقرير ${outputLabel}${batch.templateFileName ? ` على نمط ${batch.templateFileName}` : ""}.` },
+        { role: "model", content: generated.replyText.slice(0, 3000) }
+      );
+      session.batchInspection = undefined;
+      this.userSessions.set(uid, session);
+      await telegramSessionStore.save(uid, session).catch(() => {});
+      this.recordActivity({
+        fromUser: ctx.from?.username ? `@${ctx.from.username}` : ctx.from?.first_name || "Telegram User",
+        userInput: `Batch inspection: ${batch.photos.length} photos (${format})`,
+        skillUsed: `ImageSkill + ${formatSkills[format]}`,
+        replyPreview: generated.replyText.slice(0, 140),
+        generatedFileName: generated.generatedFile?.fileName,
+      });
+    } catch (err: any) {
+      batch.processing = false;
+      logger.error("Telegram batch photo inspection failed", {
+        error: err?.message || String(err),
+        photoCount: batch.photos.length,
+      });
+      await this.replyWithRetry(
+        ctx,
+        "تعذر إكمال تقرير الصور الآن. الصور ما زالت محفوظة مؤقتًا؛ جرّب /finish بنفس الصيغة مرة أخرى بعد قليل، أو /cancelbatch لإلغائها."
+      );
+    }
+  }
+
   private registerHandlers(bot: Bot) {
     // Polling safety net: ensure update_id deduplication even in polling mode
     bot.use(async (ctx, next) => {
@@ -871,6 +1140,7 @@ class TelegramBotManager {
               ...saved,
               memorySummary: saved.memorySummary || "",
               memoryTopics: saved.memoryTopics || [],
+              referenceTemplate: saved.referenceTemplate,
             });
           }
         } catch (err: any) {
@@ -929,6 +1199,13 @@ class TelegramBotManager {
           "/excel - توليد جداول Excel (XLSX)\n" +
           "/pdf - توليد تقارير PDF رسمية\n" +
           "/ppt - توليد عروض PowerPoint (PPTX)\n" +
+          "/batch - تجميع حتى 50 صورة للمعاينة\n" +
+          "/finish word|excel|pdf - إنشاء تقرير من الصور\n" +
+          "/cancelbatch - إلغاء دفعة الصور\n" +
+          "/saveref - حفظ ملف كنموذج مرجعي\n" +
+          "/refs - عرض النموذج المرجعي\n" +
+          "/forgetref - حذف النموذج الشخصي\n" +
+          "/memory - عرض الذاكرة طويلة الأمد\n" +
           "/history - عرض سجل المحادثات\n" +
           "/settings - إعدادات اللغة والنموذج\n" +
           "/clear - مسح سياق المحادثة الحالي",
@@ -980,6 +1257,85 @@ class TelegramBotManager {
           ? `🧠 دي خلاصة المعلومات والمواضيع اللي محتفظ بيها عشان أفتكرها في المحادثات القادمة:\n\n${summary}${topics}\n\nلمسحها استخدم /clear.`
           : "🧠 لسه مفيش ملخص طويل الأمد. هحفظ تفضيلاتك ومشاريعك ومواضيع المتابعة المهمة تلقائيًا مع استمرار المحادثة. استخدم /clear لمسح الذاكرة."
       );
+    });
+
+    bot.command("batch", async (ctx) => {
+      const uid = ctx.from?.id || 0;
+      const session = this.getSession(uid);
+      session.batchInspection = {
+        photos: [],
+        totalBytes: 0,
+        templateText: session.referenceTemplate?.blueprint || DEFAULT_ROOM_DEFECTS_REFERENCE,
+        templateFileName: session.referenceTemplate?.fileName || "نموذج تقرير ملاحظات الغرف",
+      };
+      this.userSessions.set(uid, session);
+      await this.replyWithRetry(
+        ctx,
+        "📸 بدأ تجميع صور المعاينة. ابعت لحد 50 صورة، صورة واحدة أو ألبومات. لو عايز نموذج مختلف، ارفع ملف Word أو Excel أو PDF أثناء التجميع. لما تخلص اكتب /finish word أو /finish excel أو /finish pdf. الحد 30 ميجابايت إجماليًا؛ للإلغاء استخدم /cancelbatch."
+      );
+    });
+
+    bot.command("saveref", async (ctx) => {
+      const uid = ctx.from?.id || 0;
+      const session = this.getSession(uid);
+      session.awaitingReference = true;
+      this.userSessions.set(uid, session);
+      await this.replyWithRetry(
+        ctx,
+        "📄 ابعت دلوقتي ملف Word أو Excel أو PDF أو CSV أو TXT اللي عايزني أحفظ بنيته كمرجع. هحفظ شكل العناوين والجداول فقط، مش ملف الصور نفسه."
+      );
+    });
+
+    bot.command("refs", async (ctx) => {
+      const session = this.getSession(ctx.from?.id || 0);
+      const saved = session.referenceTemplate;
+      await this.replyWithRetry(
+        ctx,
+        saved
+          ? `📚 النموذج المرجعي المحفوظ: ${saved.fileName}\nاستخدم /batch لعمل تقرير جديد على نفس بنيته، أو /saveref لاستبداله، أو /forgetref لحذفه.`
+          : `📚 مفيش نموذج شخصي محفوظ. قالب تقارير ملاحظات الغرف المرفق مفعّل افتراضيًا. استخدم /saveref لحفظ نموذج آخر.`
+      );
+    });
+
+    bot.command("forgetref", async (ctx) => {
+      const session = this.getSession(ctx.from?.id || 0);
+      session.referenceTemplate = undefined;
+      this.userSessions.set(ctx.from?.id || 0, session);
+      await this.replyWithRetry(ctx, "تم حذف النموذج الشخصي المحفوظ. قالب تقارير الغرف الافتراضي ما زال متاحًا.");
+    });
+
+    bot.command("finish", async (ctx) => {
+      const uid = ctx.from?.id || 0;
+      const session = this.userSessions.get(uid);
+      const batch = session?.batchInspection;
+      if (!session || !batch) {
+        await this.replyWithRetry(ctx, "مفيش تجميع صور شغال. ابدأ بـ /batch الأول.");
+        return;
+      }
+      const formatText = String(ctx.match || "").trim().toLowerCase();
+      const formatAliases: Record<string, InspectionOutputFormat> = {
+        word: "word", docx: "word", وورد: "word",
+        excel: "excel", xlsx: "excel", إكسل: "excel", اكسل: "excel",
+        pdf: "pdf", "بي دي اف": "pdf",
+      };
+      const format = formatAliases[formatText];
+      if (!format) {
+        await this.replyWithRetry(ctx, "اختار نوع الملف في الأمر: /finish word أو /finish excel أو /finish pdf");
+        return;
+      }
+      await this.processInspectionBatch(ctx, uid, session, format);
+    });
+
+    bot.command("cancelbatch", async (ctx) => {
+      const uid = ctx.from?.id || 0;
+      const session = this.userSessions.get(uid);
+      if (!session?.batchInspection) {
+        await this.replyWithRetry(ctx, "مفيش تجميع صور شغال دلوقتي.");
+        return;
+      }
+      session.batchInspection = undefined;
+      this.userSessions.set(uid, session);
+      await this.replyWithRetry(ctx, "تم إلغاء التجميع ومسح الصور المؤقتة من الجلسة.");
     });
 
     // 5. /settings command
@@ -1236,6 +1592,70 @@ class TelegramBotManager {
             ? "I was created and developed by Engineer Hany. 👷‍♂️"
             : "مهندس هاني هو اللي عملني وطوّرني 👷‍♂️"
         );
+        return;
+      }
+
+      if (session.awaitingReference) {
+        if (!msg.document) {
+          await this.replyWithRetry(ctx, "مستني ملف النموذج المرجعي. ارفعه بصيغة Word أو Excel أو PDF أو CSV أو TXT.");
+          return;
+        }
+        const mime = msg.document.mime_type || "application/octet-stream";
+        const name = msg.document.file_name || "report-reference";
+        if (!/\.(docx|xlsx|pdf|csv|txt|md)$/i.test(name) && !/pdf|wordprocessingml|spreadsheetml|text\/|csv/i.test(mime)) {
+          await this.replyWithRetry(ctx, "الصيغة دي مش مدعومة كمرجع. استخدم Word أو Excel أو PDF أو CSV أو TXT.");
+          return;
+        }
+        try {
+          await this.saveReferenceTemplate(ctx, session, msg.document.file_id, name, mime);
+        } catch (err: any) {
+          session.awaitingReference = false;
+          await this.replyWithRetry(ctx, err?.message || "تعذر قراءة الملف المرجعي.");
+        }
+        return;
+      }
+
+      const activeBatch = session.batchInspection;
+      if (activeBatch?.processing && (msg.photo || msg.document)) {
+        await this.replyWithRetry(ctx, "الدفعة قيد التحليل حاليًا؛ استنى ما يخلص التقرير قبل إضافة صور جديدة.");
+        return;
+      }
+      if (activeBatch && !activeBatch.processing && msg.document) {
+        const mime = msg.document.mime_type || "application/octet-stream";
+        const name = msg.document.file_name || "inspection-template";
+        if (mime.startsWith("image/")) {
+          try {
+            await this.captureInspectionPhoto(ctx, session, msg.document.file_id, name, mime, msg.caption);
+          } catch (err: any) {
+            await this.replyWithRetry(ctx, err?.message || "تعذر استلام الصورة. حاول إرسالها كصورة من تيليجرام.");
+          }
+          return;
+        }
+        if (/\.(docx|xlsx|pdf|csv|txt|md)$/i.test(name) || /pdf|wordprocessingml|spreadsheetml|text\/|csv/i.test(mime)) {
+          try {
+            await this.captureInspectionTemplate(ctx, session, msg.document.file_id, name, mime);
+          } catch (err: any) {
+            await this.replyWithRetry(ctx, err?.message || "تعذر قراءة الملف النموذجي. ارفع DOCX أو XLSX أو PDF أو CSV أو TXT.");
+          }
+          return;
+        }
+        await this.replyWithRetry(ctx, "ارفع ملف نموذج بصيغة Word أو Excel أو PDF أو CSV أو TXT، أو ابعت صور المعاينة.");
+        return;
+      }
+      if (activeBatch && !activeBatch.processing && msg.photo?.length) {
+        const bestPhoto = msg.photo[msg.photo.length - 1];
+        try {
+          await this.captureInspectionPhoto(
+            ctx,
+            session,
+            bestPhoto.file_id,
+            `inspection_${activeBatch.photos.length + 1}.jpg`,
+            "image/jpeg",
+            msg.caption
+          );
+        } catch (err: any) {
+          await this.replyWithRetry(ctx, err?.message || "تعذر استلام الصورة. حاول مرة أخرى.");
+        }
         return;
       }
 

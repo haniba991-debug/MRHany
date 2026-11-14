@@ -328,6 +328,7 @@ Archived conversation turns: ${JSON.stringify(safeTurns)}`;
     mimeType: string;
     prompt: string;
     isEngineeringMode?: boolean;
+    images?: Array<{ base64Data: string; mimeType: string }>;
   }): Promise<GeminiGenerationResult> {
     const ai = this.getClient();
     const primaryModel = "gemini-4-argon";
@@ -349,12 +350,8 @@ Analyze the uploaded image with precision: describe contents, extract all visibl
           model: modelToUse,
           contents: {
             parts: [
-              {
-                inlineData: {
-                  mimeType: params.mimeType,
-                  data: params.base64Data,
-                },
-              },
+              ...(params.images?.length ? params.images : [{ base64Data: params.base64Data, mimeType: params.mimeType }])
+                .map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64Data } })),
               {
                 text: params.prompt || "حلل هذه الصورة بالتفصيل واستخرج كافة البيانات والنصوص والجداول.",
               },
