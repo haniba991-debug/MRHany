@@ -14,7 +14,7 @@ services:
       - key: TELEGRAM_MODE
         value: webhook
       - key: WEBHOOK_EXECUTION_MODE
-        value: sync
+        value: async
       - key: TELEGRAM_AUTO_SET_WEBHOOK
         value: "true"
       - key: GEMINI_FREE_TIER_ONLY

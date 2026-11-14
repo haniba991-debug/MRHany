@@ -63,7 +63,7 @@ export class ServerGeminiService {
     operation: (modelToUse: string) => Promise<T>,
     primaryModel: string,
     fallbackModel: string = "gemini-3.8-flash",
-    probeTimeoutMs: number = 4500
+    probeTimeoutMs: number = 15000
   ): Promise<{ result: T; actualModel: string; fallbackReason?: string }> {
     // Free-tier mode is the default: never attempt models outside the free model allowlist.
     const freeTierOnly = process.env.GEMINI_FREE_TIER_ONLY !== "false";
@@ -80,7 +80,7 @@ export class ServerGeminiService {
         continue;
       }
 
-      const timeoutForModel = modelToUse === "gemini-3.1-flash-lite" ? 25000 : probeTimeoutMs;
+      const timeoutForModel = modelToUse === "gemini-3.1-flash-lite" ? 35000 : probeTimeoutMs;
 
       try {
         const res = await withRetry(
