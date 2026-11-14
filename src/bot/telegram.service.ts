@@ -81,6 +81,14 @@ class TelegramBotManager {
     return Boolean(secret && secret.length >= 8 && !secret.startsWith("YOUR_"));
   }
 
+  private getWebhookUrl(): string {
+    const configuredUrl = (process.env.TELEGRAM_WEBHOOK_URL || "").trim();
+    if (configuredUrl) return configuredUrl;
+    // Render provides the public HTTPS origin automatically for free web services.
+    const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/+$/, "");
+    return renderUrl ? `${renderUrl}/telegram/webhook` : "";
+  }
+
   public resolveTargetMode(): "webhook" | "polling" {
     const configured = (process.env.TELEGRAM_MODE || "auto").toLowerCase().trim();
     if (configured === "webhook") return "webhook";
@@ -160,7 +168,7 @@ class TelegramBotManager {
       ...this.status,
       executionMode: this.getExecutionMode(),
       webhookSecretConfigured: this.isWebhookSecretConfigured(),
-      webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || this.status.webhookUrl,
+      webhookUrl: this.getWebhookUrl() || this.status.webhookUrl,
       deduplicatedUpdates: dedupStats.deduplicatedCount,
       inFlightJobs: this.inFlightTasks.size,
     };
@@ -399,7 +407,7 @@ class TelegramBotManager {
 
       if (targetMode === "webhook") {
         // Webhook mode: NEVER start long polling (which causes 409 conflicts across Cloud Run instances)
-        const webhookUrl = (process.env.TELEGRAM_WEBHOOK_URL || "").trim();
+        const webhookUrl = this.getWebhookUrl();
         this.status = {
           ...this.status,
           connected: true,

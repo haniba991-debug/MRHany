@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: mr-hany-ai
+    runtime: docker
+    plan: free
+    branch: codex/free-cloud-foundation
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TELEGRAM_MODE
+        value: webhook
+      - key: WEBHOOK_EXECUTION_MODE
+        value: sync
+      - key: TELEGRAM_AUTO_SET_WEBHOOK
+        value: "true"
+      - key: GEMINI_FREE_TIER_ONLY
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      - key: GCP_PROJECT_ID
+        value: gen-lang-client-0702633943
+      - key: FIRESTORE_DATABASE_ID
+        value: ai-studio-mrhanyadvancedai-40ca0632-dda8-4131-b149-52e798f5efcd
+      - key: TELEGRAM_MAX_FILE_BYTES
+        value: "20971520"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: ADMIN_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON_B64
+        sync: false
