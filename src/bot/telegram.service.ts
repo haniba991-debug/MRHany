@@ -1149,6 +1149,16 @@ class TelegramBotManager {
       const msg = ctx.message;
       const text = msg.text || msg.caption || "";
 
+      if (this.isCreatorQuestion(text)) {
+        await this.replyWithRetry(
+          ctx,
+          session.language === "en"
+            ? "I was created and developed by Engineer Hany. 👷‍♂️"
+            : "مهندس هاني هو اللي عملني وطوّرني 👷‍♂️"
+        );
+        return;
+      }
+
       let fileBase64: string | undefined;
       let fileMimeType: string | undefined;
       let fileName: string | undefined;
@@ -1251,6 +1261,27 @@ class TelegramBotManager {
         await this.replyWithRetry(ctx, `عذراً، حدث خطأ أثناء المعالجة: ${err.message}`);
       }
     });
+  }
+
+  private isCreatorQuestion(text: string): boolean {
+    const normalized = text
+      .toLowerCase()
+      .replace(/[ًٌٍَُِّْـ]/g, "")
+      .replace(/[أإآ]/g, "ا")
+      .replace(/ى/g, "ي")
+      .replace(/[؟?!.,،]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const asksInArabic =
+      /(?:مين|من) (?:اللي )?(?:عملك|عاملك|عامل(?:ك| البوت)?|صنعك|انشاك|طورك|برمجك|صممك|مطورك|مصممك|صاحب البوت)/.test(normalized) ||
+      /(?:مين|من) (?:اللي )?(?:عمل|صنع|طور|برمج|صمم) (?:البوت|مستر هاني)/.test(normalized) ||
+      /(?:مين|من) (?:هو )?(?:مطور|مصمم|صاحب) البوت/.test(normalized);
+    const asksInEnglish =
+      /\bwho (?:made|built|created|developed|designed) (?:you|the bot|this bot|mr hany)\b/.test(normalized) ||
+      /\bwho is (?:your creator|your developer|behind this bot)\b/.test(normalized);
+
+    return asksInArabic || asksInEnglish;
   }
 }
 
