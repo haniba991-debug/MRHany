@@ -1,0 +1,6 @@
+{
+  "name": "Mr. Hany – Advanced AI Assistant",
+  "description": "Modular bilingual (Arabic/English) AI agent platform and Telegram assistant powered by Gemini, Firestore, Maps Grounding, and Google Workspace.",
+  "requestFramePermissions": ["microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

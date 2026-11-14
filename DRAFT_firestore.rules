@@ -1,0 +1,194 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net - Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'haniba991@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function userProfileExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    // Entity Validation Blueprints (Pillar 2: Anti-Update-Gap)
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'language', 'preferredModel', 'memoryRetentionDays', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'language', 'preferredModel', 'memoryRetentionDays', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.language is string && data.language.size() >= 2 && data.language.size() <= 5 && (data.language == 'ar' || data.language == 'en')
+        && data.preferredModel is string && data.preferredModel.size() >= 5 && data.preferredModel.size() <= 64
+        && (data.preferredModel == 'gemini-4-argon' || data.preferredModel == 'gemini-3.8-flash' || data.preferredModel == 'gemini-3.1-flash-lite')
+        && data.memoryRetentionDays is int && data.memoryRetentionDays >= 1 && data.memoryRetentionDays <= 365
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['userId', 'role', 'content', 'skillUsed', 'modelUsed', 'tokensUsed', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'role', 'content', 'skillUsed', 'modelUsed', 'tokensUsed', 'createdAt'])
+        && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId == request.auth.uid
+        && data.role is string && data.role.size() >= 4 && data.role.size() <= 10 && (data.role == 'user' || data.role == 'model')
+        && data.content is string && data.content.size() >= 1 && data.content.size() <= 20000
+        && data.skillUsed is string && data.skillUsed.size() >= 1 && data.skillUsed.size() <= 64
+        && data.modelUsed is string && data.modelUsed.size() >= 1 && data.modelUsed.size() <= 64
+        && data.tokensUsed is int && data.tokensUsed >= 0 && data.tokensUsed <= 1000000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUserMemory(data) {
+      return data.keys().hasAll(['userId', 'category', 'title', 'content', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'category', 'title', 'content', 'createdAt', 'updatedAt'])
+        && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId == request.auth.uid
+        && data.category is string && data.category.size() >= 4 && data.category.size() <= 32
+        && (data.category == 'preference' || data.category == 'project' || data.category == 'engineering' || data.category == 'note')
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.content is string && data.content.size() >= 1 && data.content.size() <= 5000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProcessedFileRecord(data) {
+      return data.keys().hasAll(['userId', 'fileName', 'fileType', 'direction', 'summary', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'fileName', 'fileType', 'direction', 'summary', 'createdAt'])
+        && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId == request.auth.uid
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255
+        && data.fileType is string && data.fileType.size() >= 1 && data.fileType.size() <= 120
+        && data.direction is string && data.direction.size() >= 8 && data.direction.size() <= 12
+        && (data.direction == 'analyzed' || data.direction == 'generated')
+        && data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 8000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAdminDoc(data) {
+      return data.keys().hasAll(['uid', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp;
+    }
+
+    // 1. Users Collection (/users/{userId})
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'language', 'preferredModel', 'memoryRetentionDays', 'updatedAt'])) ||
+          isAdmin()
+        );
+      allow delete: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    // 2. Conversation Messages Collection (/messages/{messageId})
+    match /messages/{messageId} {
+      allow get: if isVerifiedUser() && isValidId(messageId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(messageId)
+        && isValidChatMessage(incoming())
+        && incoming().createdAt == request.time
+        && userProfileExists(request.auth.uid);
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(messageId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // 3. Persistent User Memories & Notes Collection (/memories/{memoryId})
+    match /memories/{memoryId} {
+      allow get: if isVerifiedUser() && isValidId(memoryId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(memoryId)
+        && isValidUserMemory(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && userProfileExists(request.auth.uid);
+      allow update: if isVerifiedUser()
+        && isValidId(memoryId)
+        && isValidUserMemory(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(existing().userId) && incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'content', 'updatedAt'])) ||
+          isAdmin()
+        );
+      allow delete: if isVerifiedUser() && isValidId(memoryId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // 4. Processed & Generated File Records Collection (/files/{fileId})
+    match /files/{fileId} {
+      allow get: if isVerifiedUser() && isValidId(fileId) && (isOwner(existing().userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(fileId)
+        && isValidProcessedFileRecord(incoming())
+        && incoming().createdAt == request.time
+        && userProfileExists(request.auth.uid);
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(fileId) && (isOwner(existing().userId) || isAdmin());
+    }
+
+    // 5. Trusted Admins Collection (/admins/{adminId})
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(adminId)
+        && isBootstrappedAdmin()
+        && isValidAdminDoc(incoming())
+        && incoming().uid == adminId
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(adminId) && isBootstrappedAdmin();
+    }
+  }
+}

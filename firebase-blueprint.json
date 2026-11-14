@@ -1,0 +1,233 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public and preference profile for an authenticated user of Mr. Hany AI Assistant.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the user.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "language": {
+          "type": "string",
+          "description": "Preferred UI and AI response language (ar or en).",
+          "enum": ["ar", "en"],
+          "minLength": 2,
+          "maxLength": 5
+        },
+        "preferredModel": {
+          "type": "string",
+          "description": "Preferred Gemini model identifier.",
+          "enum": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.1-flash-lite"],
+          "minLength": 5,
+          "maxLength": 64
+        },
+        "memoryRetentionDays": {
+          "type": "integer",
+          "description": "Number of days to retain conversation memory."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated."
+        }
+      },
+      "required": ["uid", "displayName", "language", "preferredModel", "memoryRetentionDays", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual conversation message stored in a user's persistent history.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the user who owns this message.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "description": "Sender role: user or model.",
+          "enum": ["user", "model"],
+          "minLength": 4,
+          "maxLength": 10
+        },
+        "content": {
+          "type": "string",
+          "description": "Text or markdown content of the message.",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "skillUsed": {
+          "type": "string",
+          "description": "Name of the AI skill that handled the message.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "Gemini model used for generation.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "tokensUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by this message turn."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the message was recorded."
+        }
+      },
+      "required": ["userId", "role", "content", "skillUsed", "modelUsed", "tokensUsed", "createdAt"]
+    },
+    "UserMemory": {
+      "title": "UserMemory",
+      "description": "User-approved persistent memory fact, preference, or engineering project note.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the user who owns this memory item.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "description": "Category of memory (preference, project, engineering, note).",
+          "enum": ["preference", "project", "engineering", "note"],
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "description": "Concise title of the memory or note.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "content": {
+          "type": "string",
+          "description": "Detailed content of the memory or note.",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the memory was saved."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the memory was last updated."
+        }
+      },
+      "required": ["userId", "category", "title", "content", "createdAt", "updatedAt"]
+    },
+    "ProcessedFileRecord": {
+      "title": "ProcessedFileRecord",
+      "description": "Metadata record of an analyzed or generated file (DOCX, XLSX, PDF, PPTX, Image, Audio, Video).",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the user who owns this file record.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Name of the uploaded or generated file.",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fileType": {
+          "type": "string",
+          "description": "Category or MIME type of the file.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "direction": {
+          "type": "string",
+          "description": "Whether the file was uploaded for analysis or generated by Mr. Hany.",
+          "enum": ["analyzed", "generated"],
+          "minLength": 8,
+          "maxLength": 12
+        },
+        "summary": {
+          "type": "string",
+          "description": "Executive summary or key extraction result.",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the file was processed."
+        }
+      },
+      "required": ["userId", "fileName", "fileType", "direction", "summary", "createdAt"]
+    },
+    "AdminDoc": {
+      "title": "AdminDoc",
+      "description": "Trusted admin registry document keyed by admin UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Admin user UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin was registered."
+        }
+      },
+      "required": ["uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Stores user profile and preferences without PII exposure."
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Stores individual conversation history turns scoped strictly to userId."
+    },
+    "/memories/{memoryId}": {
+      "schema": { "$ref": "#/entities/UserMemory" },
+      "description": "Stores user-approved persistent memories and Keep-compatible notes scoped strictly to userId."
+    },
+    "/files/{fileId}": {
+      "schema": { "$ref": "#/entities/ProcessedFileRecord" },
+      "description": "Stores metadata and summaries of analyzed and generated files scoped strictly to userId."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminDoc" },
+      "description": "Stores verified administrator UIDs."
+    }
+  }
+}

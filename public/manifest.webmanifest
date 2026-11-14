@@ -1,0 +1,76 @@
+{
+  "id": "/",
+  "name": "Mr. Hany – AI Assistant",
+  "short_name": "Mr. Hany",
+  "description": "مستر هاني – المساعد الذكي المتطور والمهندس الاستشاري لتحليل المخططات وتوليد ملفات Excel وWord وPDF وPowerPoint.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "ar",
+  "dir": "rtl",
+  "prefer_related_applications": false,
+  "categories": ["productivity", "business", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "540x720",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Mr. Hany AI Assistant on Mobile"
+    },
+    {
+      "src": "/screenshot-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Mr. Hany Engineering & File Generation Suite"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "إنشاء شيت Excel بالمعادلات",
+      "short_name": "شيت Excel",
+      "description": "توليد جداول إكسل ديناميكية بالمعادلات الحسابية",
+      "url": "/?skill=excel",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "تقرير Word احترافي",
+      "short_name": "تقرير Word",
+      "description": "إنشاء تقارير ومستندات وورد رسمية",
+      "url": "/?skill=word",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "المساعد الهندسي BOQ",
+      "short_name": "الهندسة BOQ",
+      "description": "تحليل المخططات وحصر كميات الخرسانة والحديد",
+      "url": "/?skill=engineering",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
