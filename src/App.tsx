@@ -165,7 +165,7 @@ export default function App() {
       id: "welcome_turn",
       role: "model",
       content:
-        "مرحباً بك! أنا **مستر هاني (Mr. Hany)**، مساعدك الذكي المتطور والمهندس الاستشاري.\n\nيمكنني مساعدتك اليوم في:\n- المحادثة الذكية، البحث المعمق، وربط خرائط Google.\n- قراءة وتحليل ملفات **PDF, Word, Excel, CSV, TXT** مهما كان حجمها.\n- تحليل الصور، لقطات الشاشة، الفيديو، والمخططات الهندسية وحصر كميات الخرسانة والحديد (**Gemini 4 Argon**).\n- تفريغ الرسائل الصوتية بالعربية (المصرية والخليجية والفصحى) والإنجليزية (**Gemini 3.5 Transcribe**) والرد الصوتي.\n- توليد ملفات **Word, Excel, PDF, PowerPoint** وتصديرها مباشرة إلى **Google Docs, Sheets, Slides**.",
+        "مرحباً بك! أنا **مستر هاني (Mr. Hany)**، مساعدك الذكي المتطور والمهندس الاستشاري.\n\nيمكنني مساعدتك اليوم في:\n- المحادثة الذكية والبحث والإجابة عن أسئلتك.\n- قراءة وتحليل ملفات **PDF, Word, Excel, CSV, TXT**.\n- تحليل الصور والفيديو والمخططات الهندسية وحصر الكميات.\n- تفريغ الرسائل الصوتية والرد عليها بالعربية والإنجليزية.\n- إنشاء ملفات **Word, Excel, PDF, PowerPoint** ومساعدتك في تصديرها إلى حسابك عند الطلب.",
       skillUsed: "ChatSkill",
       modelUsed: "gemini-3.8-flash",
       tokensUsed: 0,
@@ -827,8 +827,6 @@ export default function App() {
             </div>
             <div className="text-xs text-slate-600 dark:text-slate-400">
               <span className="font-semibold text-slate-900 dark:text-slate-100">Mr. Hany AI</span>
-              <span className="mx-1.5">·</span>
-              <span>{selectedModel}</span>
               <span className="hidden sm:inline mx-1.5">·</span>
               <span className="hidden sm:inline font-mono tabular-nums">{totalTokensConsumed} tokens</span>
             </div>
@@ -860,18 +858,6 @@ export default function App() {
                 </>
               )}
             </button>
-
-            {/* Model Selector */}
-            <select
-              aria-label="Select Gemini Model"
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value as any)}
-              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            >
-              <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-              <option value="gemini-4-argon">Gemini 4 Argon (paid-tier model)</option>
-              <option value="gemini-3.1-flash-lite">Gemini 3.1 Lite (Fast)</option>
-            </select>
 
             {/* Language Switcher */}
             <button
@@ -1283,8 +1269,6 @@ export default function App() {
                       {sidebarMenus.find((m) => m.id === activeMenu)?.label}
                     </h2>
                     <div className="mt-0.5 text-xs text-slate-500">
-                      <span>{selectedModel}</span>
-                      <span className="mx-1.5">·</span>
                       <span>{isAr ? "يدعم العربية والإنجليزية" : "Arabic & English Supported"}</span>
                     </div>
                   </div>
@@ -1441,8 +1425,6 @@ export default function App() {
                           </span>
                           <span className="mx-1.5">·</span>
                           <span>{turn.skillUsed}</span>
-                          <span className="mx-1.5">·</span>
-                          <span>{turn.modelUsed}</span>
                           {turn.tokensUsed > 0 && (
                             <>
                               <span className="mx-1.5">·</span>
@@ -1478,7 +1460,7 @@ export default function App() {
                       {turn.transcript && (
                         <div className="mt-3 rounded-lg bg-slate-100 p-3 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
                           <span className="font-semibold">
-                            {isAr ? "النص المفرغ صوتياً (gemini-3.5-transcribe): " : "Audio Transcript: "}
+                            {isAr ? "النص المفرغ صوتياً: " : "Audio Transcript: "}
                           </span>
                           <span>{turn.transcript}</span>
                         </div>

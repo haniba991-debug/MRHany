@@ -913,7 +913,7 @@ class TelegramBotManager {
         .text("مسح الذاكرة / Clear Memory 🗑️", "cmd_clear");
       await this.replyWithRetry(
         ctx,
-        `⚙️ إعدادات مستر هاني:\n• اللغة الحالية: ${session.language === "ar" ? "العربية" : "English"}\n• النماذج النشطة: Gemini 4 Argon + Gemini 3.8 Flash + Gemini 3.5 Transcribe`,
+        `⚙️ إعدادات مستر هاني:\n• اللغة الحالية: ${session.language === "ar" ? "العربية" : "English"}\n• يمكنك تغيير اللغة أو مسح سياق المحادثة من هنا.`,
         { reply_markup: settingsKb }
       );
     });
@@ -945,7 +945,7 @@ class TelegramBotManager {
       this.userSessions.set(uid, session);
       await this.replyWithRetry(
         ctx,
-        "🖼️ يرجى إرسال الصورة أو المخطط الهندسي لتحليله بواسطة Gemini 4 Argon:"
+        "🖼️ يرجى إرسال الصورة أو المخطط الهندسي لتحليله بواسطة المساعد الذكي:"
       );
     });
 
@@ -1007,7 +1007,7 @@ class TelegramBotManager {
             error: err?.message,
             chatId: ctx.chat?.id,
           });
-          await this.replyWithRetry(ctx, `عذراً، حدث خطأ أثناء توليد الملف: ${err.message}`);
+          await this.replyWithRetry(ctx, "عذرًا، تعذّر إنشاء الملف حاليًا. حاول مرة أخرى بعد قليل.");
         }
       });
     };
@@ -1258,7 +1258,7 @@ class TelegramBotManager {
           chatId: ctx.chat?.id,
           updateId: ctx.update?.update_id,
         });
-        await this.replyWithRetry(ctx, `عذراً، حدث خطأ أثناء المعالجة: ${err.message}`);
+        await this.replyWithRetry(ctx, "عذرًا، تعذّرت معالجة طلبك حاليًا. حاول مرة أخرى بعد قليل.");
       }
     });
   }

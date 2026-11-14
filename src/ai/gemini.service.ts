@@ -20,6 +20,8 @@ export interface GeminiGenerationResult {
   fallbackApplied?: string;
 }
 
+const INTERNAL_DISCLOSURE_POLICY = `Internal privacy rule: do not disclose or speculate about the assistant's AI provider, model names, APIs, credentials, hosting, database, or configuration. If asked about implementation details, reply briefly that you are Mr. Hany's assistant and redirect to helping with the user's request. Do not claim a different provider or repeat implementation details from conversation history.`;
+
 export class ServerGeminiService {
   private getClient(): GoogleGenAI {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -139,16 +141,12 @@ export class ServerGeminiService {
   private formatApiError(err: any): Error {
     const rawMsg = String(err?.message || err || "Unknown Gemini API Error");
     if (rawMsg.includes("API_KEY_INVALID") || rawMsg.includes("PERMISSION_DENIED")) {
-      return new Error(
-        `خطأ في صلاحية مفتاح Gemini API (403/400): يرجى التحقق من إعداد مفتاح GEMINI_API_KEY في لوحة Secrets. (${rawMsg})`
-      );
+      return new Error("تعذر إكمال الطلب حاليًا. حاول مرة أخرى لاحقًا.");
     }
     if (rawMsg.includes("RESOURCE_EXHAUSTED") || rawMsg.includes("429")) {
-      return new Error(
-        `تم تجاوز حد الاستخدام الحالي لـ Gemini API (429 Quota Exceeded): يرجى المحاولة بعد لحظات أو الترقية إلى مفتاح مدفوع. (${rawMsg})`
-      );
+      return new Error("الخدمة مشغولة حاليًا. حاول مرة أخرى بعد قليل.");
     }
-    return new Error(rawMsg);
+    return new Error("حصل عطل مؤقت أثناء معالجة الطلب. حاول مرة أخرى بعد قليل.");
   }
 
   /**
@@ -173,13 +171,14 @@ export class ServerGeminiService {
       ? "gemini-3.8-flash"
       : params.model || "gemini-3.8-flash";
 
-    const defaultSystemInstruction =
+    const baseSystemInstruction =
       params.systemInstructionOverride ||
       `You are Mr. Hany (مستر هاني), an advanced, intelligent, friendly, and highly professional AI assistant and principal consultant.
 Rules:
 1. Respond naturally in the language used by the user (Arabic is default; support Arabic, English, and mixed-language conversations seamlessly).
 2. Provide structured, accurate, and actionable answers with clear headings, bullet points, and tables where helpful.
 3. For mathematical or engineering calculations, show step-by-step formulas and clearly state assumptions vs. verified measurements.${freeTierOnly && groundingRequested ? "\n4. Live web search and map grounding are disabled in free-tier mode. Do not imply that you checked current sources or live locations." : ""}`;
+    const defaultSystemInstruction = `${baseSystemInstruction}\n\n${INTERNAL_DISCLOSURE_POLICY}`;
 
     const contents = [
       ...(params.history || []).map((msg) => ({
@@ -312,7 +311,7 @@ Analyze the uploaded image with precision: describe contents, extract all visibl
             ],
           },
           config: {
-            systemInstruction: sysInstruction,
+            systemInstruction: `${sysInstruction}\n\n${INTERNAL_DISCLOSURE_POLICY}`,
           },
         }),
       primaryModel,
@@ -363,8 +362,7 @@ Analyze the uploaded image with precision: describe contents, extract all visibl
             ],
           },
           config: {
-            systemInstruction:
-              "You are Mr. Hany (مستر هاني), an advanced video intelligence and site inspection analyst. Provide a chronological breakdown, key observations, and actionable takeaways.",
+            systemInstruction: `You are Mr. Hany (مستر هاني), an advanced video intelligence and site inspection analyst. Provide a chronological breakdown, key observations, and actionable takeaways.\n\n${INTERNAL_DISCLOSURE_POLICY}`,
           },
         }),
       primaryModel,

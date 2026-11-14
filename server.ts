@@ -310,7 +310,7 @@ export async function createApp() {
     } catch (error: any) {
       logger.error("Agent execution error", { error: error?.message || String(error) });
       return res.status(500).json({
-        error: error.message || "حدث خطأ أثناء معالجة الطلب بواسطة مستر هاني.",
+        error: "تعذّر إكمال الطلب حاليًا. حاول مرة أخرى بعد قليل.",
       });
     }
   });
