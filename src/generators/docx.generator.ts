@@ -38,6 +38,12 @@ export interface DocxSpec {
     approvedBy?: string;
   };
   imageBase64?: string;
+  inspectionPhotos?: Array<{
+    photoNumber: number;
+    caption?: string;
+    imageBase64: string;
+    mimeType?: string;
+  }>;
   isRtl?: boolean;
 }
 
@@ -313,6 +319,85 @@ export class DocxGenerator {
         new Table({
           width: { size: 100, type: WidthType.PERCENTAGE },
           rows: [new TableRow({ children: headerCells }), ...dataRows],
+        })
+      );
+    }
+
+    if (spec.inspectionPhotos?.length) {
+      children.push(
+        new Paragraph({
+          heading: HeadingLevel.HEADING_2,
+          alignment: align,
+          bidirectional: isRtl,
+          spacing: { before: 300, after: 160 },
+          children: [
+            new TextRun({
+              text: isRtl ? "الصور التوثيقية للملاحظات" : "Photo Evidence",
+              bold: true,
+              size: 26,
+              color: "0F172A",
+              rightToLeft: isRtl,
+            }),
+          ],
+        })
+      );
+
+      const photoRows: TableRow[] = [];
+      for (let i = 0; i < spec.inspectionPhotos.length; i += 2) {
+        const pair = spec.inspectionPhotos.slice(i, i + 2);
+        const cells = pair.map((photo) => {
+          const image = Buffer.from(photo.imageBase64, "base64");
+          const imageType = photo.mimeType?.includes("png") ? "png" : "jpg";
+          return new TableCell({
+            width: { size: 50, type: WidthType.PERCENTAGE },
+            verticalAlign: "center" as any,
+            margins: { top: 100, bottom: 100, left: 100, right: 100 },
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+              bottom: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+              left: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+              right: { style: BorderStyle.SINGLE, size: 1, color: "CBD5E1" },
+            },
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new ImageRun({
+                    data: image,
+                    transformation: { width: 230, height: 145 },
+                    type: imageType,
+                  }),
+                ],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                bidirectional: isRtl,
+                spacing: { before: 60, after: 60 },
+                children: [
+                  new TextRun({
+                    text: photo.caption || (isRtl ? `صورة رقم ${photo.photoNumber}` : `Photo ${photo.photoNumber}`),
+                    size: 18,
+                    color: "334155",
+                    rightToLeft: isRtl,
+                  }),
+                ],
+              }),
+            ],
+          });
+        });
+
+        if (cells.length === 1) {
+          cells.push(new TableCell({
+            width: { size: 50, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ text: "" })],
+          }));
+        }
+        photoRows.push(new TableRow({ children: cells }));
+      }
+      children.push(
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: photoRows,
         })
       );
     }

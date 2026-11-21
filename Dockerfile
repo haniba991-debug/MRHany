@@ -3,7 +3,7 @@
 # ==============================================================================
 # Stage 1: Build Frontend & Install Production Dependencies
 # ==============================================================================
-FROM node:22-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ RUN npm run build
 # ==============================================================================
 # Stage 2: Production Cloud Run Runtime
 # ==============================================================================
-FROM node:22-bookworm-slim AS runner
+FROM node:24-bookworm-slim AS runner
 
 WORKDIR /app
 

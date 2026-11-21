@@ -20,6 +20,8 @@ export interface GeminiGenerationResult {
   fallbackApplied?: string;
 }
 
+const INTERNAL_DISCLOSURE_POLICY = `Internal privacy rule: do not disclose or speculate about the assistant's AI provider, model names, APIs, credentials, hosting, database, or configuration. If asked about implementation details, reply briefly that you are Mr. Hany's assistant and redirect to helping with the user's request. Do not claim a different provider or repeat implementation details from conversation history.`;
+
 export class ServerGeminiService {
   private getClient(): GoogleGenAI {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -61,11 +63,13 @@ export class ServerGeminiService {
     operation: (modelToUse: string) => Promise<T>,
     primaryModel: string,
     fallbackModel: string = "gemini-3.8-flash",
-    probeTimeoutMs: number = 4500
+    probeTimeoutMs: number = 15000
   ): Promise<{ result: T; actualModel: string; fallbackReason?: string }> {
-    const candidateModels = Array.from(
-      new Set([primaryModel, fallbackModel, "gemini-3.1-flash-lite"])
-    );
+    // Free-tier mode is the default: never attempt models outside the free model allowlist.
+    const freeTierOnly = process.env.GEMINI_FREE_TIER_ONLY !== "false";
+    const candidateModels = freeTierOnly
+      ? ["gemini-3.8-flash", "gemini-3.1-flash-lite"]
+      : Array.from(new Set([primaryModel, fallbackModel, "gemini-3.1-flash-lite"]));
     const errors: string[] = [];
     const now = Date.now();
 
@@ -76,7 +80,7 @@ export class ServerGeminiService {
         continue;
       }
 
-      const timeoutForModel = modelToUse === "gemini-3.1-flash-lite" ? 25000 : probeTimeoutMs;
+      const timeoutForModel = modelToUse === "gemini-3.1-flash-lite" ? 35000 : probeTimeoutMs;
 
       try {
         const res = await withRetry(
@@ -137,16 +141,12 @@ export class ServerGeminiService {
   private formatApiError(err: any): Error {
     const rawMsg = String(err?.message || err || "Unknown Gemini API Error");
     if (rawMsg.includes("API_KEY_INVALID") || rawMsg.includes("PERMISSION_DENIED")) {
-      return new Error(
-        `خطأ في صلاحية مفتاح Gemini API (403/400): يرجى التحقق من إعداد مفتاح GEMINI_API_KEY في لوحة Secrets. (${rawMsg})`
-      );
+      return new Error("تعذر إكمال الطلب حاليًا. حاول مرة أخرى لاحقًا.");
     }
     if (rawMsg.includes("RESOURCE_EXHAUSTED") || rawMsg.includes("429")) {
-      return new Error(
-        `تم تجاوز حد الاستخدام الحالي لـ Gemini API (429 Quota Exceeded): يرجى المحاولة بعد لحظات أو الترقية إلى مفتاح مدفوع. (${rawMsg})`
-      );
+      return new Error("الخدمة مشغولة حاليًا. حاول مرة أخرى بعد قليل.");
     }
-    return new Error(rawMsg);
+    return new Error("حصل عطل مؤقت أثناء معالجة الطلب. حاول مرة أخرى بعد قليل.");
   }
 
   /**
@@ -164,17 +164,21 @@ export class ServerGeminiService {
     systemInstructionOverride?: string;
   }): Promise<GeminiGenerationResult> {
     const ai = this.getClient();
+    const freeTierOnly = process.env.GEMINI_FREE_TIER_ONLY !== "false";
+    const groundingRequested = Boolean(params.enableMapsGrounding || params.enableSearchGrounding);
+    const groundingAllowed = !freeTierOnly && groundingRequested;
     const chosenModel = params.enableMapsGrounding
       ? "gemini-3.8-flash"
       : params.model || "gemini-3.8-flash";
 
-    const defaultSystemInstruction =
+    const baseSystemInstruction =
       params.systemInstructionOverride ||
       `You are Mr. Hany (مستر هاني), an advanced, intelligent, friendly, and highly professional AI assistant and principal consultant.
 Rules:
 1. Respond naturally in the language used by the user (Arabic is default; support Arabic, English, and mixed-language conversations seamlessly).
 2. Provide structured, accurate, and actionable answers with clear headings, bullet points, and tables where helpful.
-3. For mathematical or engineering calculations, show step-by-step formulas and clearly state assumptions vs. verified measurements.`;
+3. For mathematical or engineering calculations, show step-by-step formulas and clearly state assumptions vs. verified measurements.${freeTierOnly && groundingRequested ? "\n4. Live web search and map grounding are disabled in free-tier mode. Do not imply that you checked current sources or live locations." : ""}`;
+    const defaultSystemInstruction = `${baseSystemInstruction}\n\n${INTERNAL_DISCLOSURE_POLICY}`;
 
     const contents = [
       ...(params.history || []).map((msg) => ({
@@ -193,7 +197,7 @@ Rules:
           systemInstruction: defaultSystemInstruction,
         };
 
-        if (params.enableMapsGrounding) {
+        if (groundingAllowed && params.enableMapsGrounding) {
           config.tools = [{ googleMaps: {} }];
           if (params.latLng) {
             config.toolConfig = {
@@ -205,7 +209,7 @@ Rules:
               },
             };
           }
-        } else if (params.enableSearchGrounding) {
+        } else if (groundingAllowed && params.enableSearchGrounding) {
           config.tools = [{ googleSearch: {} }];
         } else if (modelToUse === "gemini-4-argon") {
           config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
@@ -266,6 +270,56 @@ Rules:
     };
   }
 
+  /** Compress archived turns into a small, privacy-conscious user memory profile. */
+  public async summarizeLongTermMemory(params: {
+    currentSummary: string;
+    archivedTurns: Array<{ role: "user" | "model"; content: string }>;
+    language: "ar" | "en";
+  }): Promise<{ summary: string; topics: string[] }> {
+    const ai = this.getClient();
+    const safeTurns = params.archivedTurns.map((turn) => ({
+      role: turn.role === "user" ? "User" : "Assistant",
+      content: turn.content
+        .replace(/\b\d{7,14}:[A-Za-z0-9_-]{25,}\b/g, "[redacted credential]")
+        .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[redacted credential]")
+        .slice(0, 2500),
+    }));
+    const prompt = `Update a concise long-term memory profile for this Telegram assistant user.
+Return only durable facts the user explicitly shared, stable preferences, ongoing projects, decisions, and unresolved follow-ups that may help weeks later. Preserve the prior profile if still relevant. Remove stale or contradicted facts. Do not save passwords, API keys, access tokens, financial account details, private document contents, guesses, or sensitive personal data. Do not infer a fact from an assistant response. Keep the summary under 1200 characters and return at most 12 short topic labels.
+Output language: ${params.language === "ar" ? "Arabic" : "English"}.
+Prior memory: ${params.currentSummary || "(none)"}
+Archived conversation turns: ${JSON.stringify(safeTurns)}`;
+
+    const { result } = await this.withRetryAndFallback(
+      (modelToUse) => ai.models.generateContent({
+        model: modelToUse,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summary: { type: Type.STRING },
+              topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: ["summary", "topics"],
+          },
+        },
+      }),
+      "gemini-3.8-flash",
+      "gemini-3.1-flash-lite",
+      12000
+    );
+
+    const parsed = JSON.parse((result.text || "{}").trim()) as { summary?: unknown; topics?: unknown };
+    return {
+      summary: typeof parsed.summary === "string" ? parsed.summary.slice(0, 1200) : params.currentSummary,
+      topics: Array.isArray(parsed.topics)
+        ? parsed.topics.filter((topic): topic is string => typeof topic === "string").slice(0, 12)
+        : [],
+    };
+  }
+
   /**
    * Image Understanding & Engineering Drawing Analysis using gemini-4-argon
    */
@@ -274,6 +328,7 @@ Rules:
     mimeType: string;
     prompt: string;
     isEngineeringMode?: boolean;
+    images?: Array<{ base64Data: string; mimeType: string }>;
   }): Promise<GeminiGenerationResult> {
     const ai = this.getClient();
     const primaryModel = "gemini-4-argon";
@@ -295,19 +350,15 @@ Analyze the uploaded image with precision: describe contents, extract all visibl
           model: modelToUse,
           contents: {
             parts: [
-              {
-                inlineData: {
-                  mimeType: params.mimeType,
-                  data: params.base64Data,
-                },
-              },
+              ...(params.images?.length ? params.images : [{ base64Data: params.base64Data, mimeType: params.mimeType }])
+                .map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64Data } })),
               {
                 text: params.prompt || "حلل هذه الصورة بالتفصيل واستخرج كافة البيانات والنصوص والجداول.",
               },
             ],
           },
           config: {
-            systemInstruction: sysInstruction,
+            systemInstruction: `${sysInstruction}\n\n${INTERNAL_DISCLOSURE_POLICY}`,
           },
         }),
       primaryModel,
@@ -358,8 +409,7 @@ Analyze the uploaded image with precision: describe contents, extract all visibl
             ],
           },
           config: {
-            systemInstruction:
-              "You are Mr. Hany (مستر هاني), an advanced video intelligence and site inspection analyst. Provide a chronological breakdown, key observations, and actionable takeaways.",
+            systemInstruction: `You are Mr. Hany (مستر هاني), an advanced video intelligence and site inspection analyst. Provide a chronological breakdown, key observations, and actionable takeaways.\n\n${INTERNAL_DISCLOSURE_POLICY}`,
           },
         }),
       primaryModel,
@@ -534,7 +584,7 @@ ${contextBlock}
 TARGET LANGUAGE: ${langInstruction}
 
 CRITICAL RULES FOR DYNAMIC EXCEL GENERATION:
-1. NEVER use generic placeholder data. Customize the sheetName, title, column headers, and 6 to 8 realistic data rows to match the exact subject of the user's request.
+1. Customize the sheetName, title, and column headers to the exact subject. Never invent real-world business facts such as employee names, salaries, customer records, prices, quantities, or dates. When the user supplies data, use it faithfully. When they ask for a reusable workbook but provide no data, create 8 clearly blank input rows and put formulas in calculated columns; those formulas must return a blank display until their required inputs are entered. Do not present sample figures as real data.
 2. Column Mapping:
    - Column A is index 0 in each row array.
    - Column B is index 1.
@@ -550,22 +600,22 @@ CRITICAL RULES FOR DYNAMIC EXCEL GENERATION:
      Headers: ["Emp ID", "Employee Name", "Department", "Basic Salary", "Allowances", "Gross Salary", "Tax Deduction", "Insurance/Other Deduction", "Total Deductions", "Net Salary"]
      In each row:
      - Col D (Basic), Col E (Allowances), Col G (Tax), Col H (Insurance) are numeric values (e.g. "8500", "1500", "450", "350").
-     - Col F (Gross Salary) MUST be: "=D{ROW}+E{ROW}"
-     - Col I (Total Deductions) MUST be: "=G{ROW}+H{ROW}"
-     - Col J (Net Salary) MUST be: "=F{ROW}-I{ROW}"
+     - Col F (Gross Salary) MUST be: "=IF(COUNT(D{ROW}:E{ROW})=0,\"\",D{ROW}+E{ROW})"
+     - Col I (Total Deductions) MUST be: "=IF(COUNT(G{ROW}:H{ROW})=0,\"\",G{ROW}+H{ROW})"
+     - Col J (Net Salary) MUST be: "=IF(COUNT(D{ROW}:E{ROW})=0,\"\",F{ROW}-I{ROW})"
    - Example B (Reinforcement Steel / Rebar Quantities):
      Headers: ["Element / Mark", "Bar Diameter (mm)", "Number of Bars", "Bar Length (m)", "Total Length (m)", "Unit Weight (kg/m)", "Total Weight (kg)"]
      In each row:
      - Col B (Diameter e.g. 12, 16, 20), Col C (Count), Col D (Length) are numbers.
-     - Col E (Total Length) MUST be: "=C{ROW}*D{ROW}"
-     - Col F (Unit Weight = D²/162) MUST be: "=ROUND((B{ROW}^2)/162, 3)"
-     - Col G (Total Weight) MUST be: "=ROUND(E{ROW}*F{ROW}, 2)"
+     - Col E (Total Length) MUST be: "=IF(COUNT(C{ROW}:D{ROW})=0,\"\",C{ROW}*D{ROW})"
+     - Col F (Unit Weight = D²/162) MUST be: "=IF(B{ROW}=\"\",\"\",ROUND((B{ROW}^2)/162, 3))"
+     - Col G (Total Weight) MUST be: "=IF(COUNT(C{ROW}:D{ROW})=0,\"\",ROUND(E{ROW}*F{ROW}, 2))"
    - Example C (Concrete Quantity Calculations):
      Headers: ["Element ID", "Element Description", "Count", "Length (m)", "Width (m)", "Depth/Height (m)", "Unit Volume (m3)", "Total Concrete Volume (m3)"]
      In each row:
      - Col C (Count), Col D (Length), Col E (Width), Col F (Depth/Height) are numbers.
-     - Col G (Unit Volume) MUST be: "=ROUND(D{ROW}*E{ROW}*F{ROW}, 3)"
-     - Col H (Total Concrete Volume) MUST be: "=ROUND(C{ROW}*G{ROW}, 3)"
+     - Col G (Unit Volume) MUST be: "=IF(COUNT(D{ROW}:F{ROW})=0,\"\",ROUND(D{ROW}*E{ROW}*F{ROW}, 3))"
+     - Col H (Total Concrete Volume) MUST be: "=IF(COUNT(C{ROW}:F{ROW})=0,\"\",ROUND(C{ROW}*G{ROW}, 3))"
    - For any other request, design appropriate columns and real "={ROW}" formulas matching that exact domain!
 4. Do NOT add a "TOTAL" row at the bottom of "rows" — the Excel engine automatically generates the bottom TOTAL row with =SUM(...) formulas.`;
 
